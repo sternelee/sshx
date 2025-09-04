@@ -19,6 +19,15 @@ service SshxService {
 
   // Login with email and password.
   rpc Login(LoginRequest) returns (AuthResponse);
+
+  // Generate an API key for authenticated users.
+  rpc GenerateApiKey(GenerateApiKeyRequest) returns (ApiKeyResponse);
+
+  // Delete an API key for authenticated users.
+  rpc DeleteApiKey(DeleteApiKeyRequest) returns (DeleteApiKeyResponse);
+
+  // List API keys for authenticated users.
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse);
 }
 
 // Details of bytes exchanged with the terminal.
@@ -48,6 +57,7 @@ message OpenRequest {
   bytes encrypted_zeros = 2;              // Encrypted zero block, for client verification.
   string name = 3;                        // Name of the session (user@hostname).
   optional bytes write_password_hash = 4; // Hashed write password, if read-only mode is enabled.
+  optional string user_api_key = 5; // User API key for authenticated sessions.
 }
 
 // Details of a newly-created sshx session.
@@ -120,6 +130,51 @@ message AuthResponse {
   string token = 1;
   string user_id = 2;
   string email = 3;
+}
+
+// Request to generate an API key for sshx usage.
+message GenerateApiKeyRequest {
+  string auth_token = 1;  // JWT authentication token
+  string name = 2;        // API key name/description
+}
+
+// Response containing API key information.
+message ApiKeyResponse {
+  string id = 1;          // API key unique identifier
+  string name = 2;        // API key name
+  string token = 3;       // API key token
+  uint64 created_at = 4;  // Creation timestamp
+  string user_id = 5;     // User ID
+}
+
+// Request to delete an API key.
+message DeleteApiKeyRequest {
+  string auth_token = 1;  // JWT authentication token
+  string api_key_id = 2;  // API key ID to delete
+}
+
+// Response for API key deletion.
+message DeleteApiKeyResponse {
+  bool success = 1;       // Whether deletion was successful
+}
+
+// Request to list user's API keys.
+message ListApiKeysRequest {
+  string auth_token = 1;  // JWT authentication token
+}
+
+// Response containing list of API keys.
+message ListApiKeysResponse {
+  repeated ApiKeyInfo api_keys = 1;
+}
+
+// API key information without the token.
+message ApiKeyInfo {
+  string id = 1;                    // API key unique identifier
+  string name = 2;                  // API key name
+  uint64 created_at = 3;            // Creation timestamp
+  optional uint64 last_used = 4;    // Last used timestamp
+  bool is_active = 5;               // Whether the API key is active
 }
 
 // Snapshot of a session, used to restore state for persistence across servers.

@@ -3,12 +3,14 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use anyhow;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use hmac::Mac;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage, sshx_service_server::SshxService,
-    AuthResponse, ClientUpdate, CloseRequest, CloseResponse, LoginRequest, OpenRequest,
-    OpenResponse, RegisterRequest, ServerUpdate,
+    ApiKeyResponse, AuthResponse, ClientUpdate, CloseRequest, CloseResponse, DeleteApiKeyRequest,
+    DeleteApiKeyResponse, GenerateApiKeyRequest, ListApiKeysRequest, ListApiKeysResponse,
+    LoginRequest, OpenRequest, OpenResponse, RegisterRequest, ServerUpdate,
 };
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
@@ -41,6 +43,24 @@ impl GrpcServer {
             state,
             user_service,
         }
+    }
+
+    /// Update user API key last used timestamp.
+    async fn update_api_key_usage(
+        &self,
+        user_id: &str,
+        api_key_token: &str,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(mut user) = self.user_service.get_user_by_id(user_id).await? {
+            let api_key_id = user
+                .get_api_key_by_token(api_key_token)
+                .map(|k| k.id.clone());
+            if let Some(api_key_id) = api_key_id {
+                user.update_api_key_last_used(&api_key_id);
+                self.user_service.save_user(&user).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -84,17 +104,105 @@ impl SshxService for GrpcServer {
         }
     }
 
+    async fn generate_api_key(
+        &self,
+        request: Request<GenerateApiKeyRequest>,
+    ) -> RR<ApiKeyResponse> {
+        let request = request.into_inner();
+        let req = crate::user::GenerateApiKeyRequest {
+            auth_token: request.auth_token,
+            name: request.name,
+        };
+
+        match self.user_service.generate_api_key(req).await {
+            Ok(response) => Ok(Response::new(ApiKeyResponse {
+                id: response.id,
+                name: response.name,
+                token: response.token,
+                created_at: response.created_at,
+                user_id: response.user_id,
+            })),
+            Err(err) => Err(Status::invalid_argument(err.to_string())),
+        }
+    }
+
+    async fn delete_api_key(
+        &self,
+        request: Request<DeleteApiKeyRequest>,
+    ) -> RR<DeleteApiKeyResponse> {
+        let request = request.into_inner();
+        let req = crate::user::DeleteApiKeyRequest {
+            auth_token: request.auth_token,
+            api_key_id: request.api_key_id,
+        };
+
+        match self.user_service.delete_api_key(req).await {
+            Ok(success) => Ok(Response::new(DeleteApiKeyResponse { success })),
+            Err(err) => Err(Status::invalid_argument(err.to_string())),
+        }
+    }
+
+    async fn list_api_keys(&self, request: Request<ListApiKeysRequest>) -> RR<ListApiKeysResponse> {
+        let request = request.into_inner();
+        let req = crate::user::ListApiKeysRequest {
+            auth_token: request.auth_token,
+        };
+
+        match self.user_service.list_api_keys(req).await {
+            Ok(response) => {
+                let api_keys = response
+                    .api_keys
+                    .into_iter()
+                    .map(|key| sshx_core::proto::ApiKeyInfo {
+                        id: key.id,
+                        name: key.name,
+                        created_at: key.created_at,
+                        last_used: key.last_used,
+                        is_active: key.is_active,
+                    })
+                    .collect();
+
+                Ok(Response::new(ListApiKeysResponse { api_keys }))
+            }
+            Err(err) => Err(Status::invalid_argument(err.to_string())),
+        }
+    }
+
     async fn open(&self, request: Request<OpenRequest>) -> RR<OpenResponse> {
         let request = request.into_inner();
         let origin = self.state.override_origin().unwrap_or(request.origin);
         if origin.is_empty() {
             return Err(Status::invalid_argument("origin is empty"));
         }
-        let name = rand_alphanumeric(10);
-        info!(%name, "creating new session");
+
+        // Check if this is a user-authenticated session
+        let (name, user_id) = if let Some(user_api_key) = request.user_api_key {
+            // Verify the API key and get associated user
+            let user_id = self
+                .user_service
+                .verify_api_key(&user_api_key)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?
+                .ok_or_else(|| Status::unauthenticated("Invalid API key"))?;
+
+            // Generate session name based on user ID and timestamp
+            let session_name = format!("user-{}-{}", &user_id[..8], chrono::Utc::now().timestamp());
+
+            // Update API key usage
+            if let Err(err) = self.update_api_key_usage(&user_id, &user_api_key).await {
+                warn!(?err, "failed to update API key usage");
+            }
+
+            (session_name, Some(user_id))
+        } else {
+            // Generate random session name for anonymous users
+            (rand_alphanumeric(10), None)
+        };
+
+        info!(%name, ?user_id, "creating new session");
 
         match self.state.lookup(&name) {
-            Some(_) => return Err(Status::already_exists("generated duplicate ID")),
+            Some(_) => return Err(Status::already_exists("session already exists")),
             None => {
                 let metadata = Metadata {
                     encrypted_zeros: request.encrypted_zeros,
@@ -104,8 +212,15 @@ impl SshxService for GrpcServer {
                 self.state.insert(&name, Arc::new(Session::new(metadata)));
             }
         };
+
         let token = self.state.mac().chain_update(&name).finalize();
         let url = format!("{origin}/s/{name}");
+
+        // Log user session creation if this is a user session
+        if let Some(ref user_id) = user_id {
+            info!(%name, %user_id, %url, "created user session");
+        }
+
         Ok(Response::new(OpenResponse {
             name,
             token: BASE64_STANDARD.encode(token.into_bytes()),

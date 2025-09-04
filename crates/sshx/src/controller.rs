@@ -52,6 +52,7 @@ impl Controller {
         name: &str,
         runner: Runner,
         enable_readers: bool,
+        api_key: Option<String>,
     ) -> Result<Self> {
         debug!(%origin, "connecting to server");
         let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
@@ -85,6 +86,7 @@ impl Controller {
             encrypted_zeros: encrypt.zeros().into(),
             name: name.into(),
             write_password_hash,
+            user_api_key: api_key,
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
