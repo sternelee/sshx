@@ -403,6 +403,7 @@
       {connected}
       {newMessages}
       {hasWriteAccess}
+      currentSessionId={id}
       on:create={handleCreate}
       on:chat={() => {
         showChat = !showChat;
@@ -413,6 +414,10 @@
       }}
       on:networkInfo={() => {
         showNetworkInfo = !showNetworkInfo;
+      }}
+      on:switchSession={({ detail }) => {
+        // 切换到新会话
+        window.location.href = `/s/${detail.sessionId}`;
       }}
     />
 

@@ -1,6 +1,7 @@
 use crate::user::{
-    ApiKeyResponse, AuthResponse, DeleteApiKeyRequest, GenerateApiKeyRequest, ListApiKeysRequest,
-    ListApiKeysResponse, LoginRequest, RegisterRequest, User, UserApiKey,
+    ApiKeyResponse, AuthResponse, CloseUserSessionRequest, DeleteApiKeyRequest,
+    GenerateApiKeyRequest, ListApiKeysRequest, ListApiKeysResponse, ListUserSessionsRequest,
+    ListUserSessionsResponse, LoginRequest, RegisterRequest, User, UserApiKey, UserSession,
 };
 use anyhow::{anyhow, Result};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
@@ -315,5 +316,152 @@ impl UserService {
 
     fn is_valid_email(&self, email: &str) -> bool {
         email.contains('@') && email.contains('.')
+    }
+
+    /// Create a new user session record.
+    pub async fn create_user_session(
+        &self,
+        user_id: &str,
+        session_name: &str,
+        session_url: &str,
+        api_key_id: Option<String>,
+    ) -> Result<UserSession> {
+        let session = UserSession {
+            id: Uuid::new_v4().to_string(),
+            name: session_name.to_string(),
+            url: session_url.to_string(),
+            user_id: user_id.to_string(),
+            api_key_id,
+            created_at: chrono::Utc::now().timestamp() as u64,
+            last_activity: chrono::Utc::now().timestamp() as u64,
+            is_active: true,
+            metadata: None,
+        };
+
+        // Save session to Redis
+        self.save_user_session(&session).await?;
+
+        // Add session to user's session list
+        self.add_session_to_user(user_id, &session.id).await?;
+
+        Ok(session)
+    }
+
+    /// List all active sessions for a user.
+    pub async fn list_user_sessions(
+        &self,
+        req: ListUserSessionsRequest,
+    ) -> Result<ListUserSessionsResponse> {
+        // Verify the JWT token
+        let claims = self.verify_token(&req.auth_token).await?;
+
+        // Get user's session IDs
+        let session_ids = self.get_user_session_ids(&claims.sub).await?;
+
+        // Get session details
+        let mut sessions = Vec::new();
+        for session_id in session_ids {
+            if let Some(session) = self.get_user_session(&session_id).await? {
+                if session.is_active {
+                    sessions.push(session);
+                }
+            }
+        }
+
+        // Sort by creation time (newest first)
+        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok(ListUserSessionsResponse { sessions })
+    }
+
+    /// Close a user session.
+    pub async fn close_user_session(&self, req: CloseUserSessionRequest) -> Result<bool> {
+        // Verify the JWT token
+        let claims = self.verify_token(&req.auth_token).await?;
+
+        // Get session and verify ownership
+        if let Some(mut session) = self.get_user_session(&req.session_id).await? {
+            if session.user_id != claims.sub {
+                return Err(anyhow!("Session not found or access denied"));
+            }
+
+            // Mark session as inactive
+            session.is_active = false;
+            session.last_activity = chrono::Utc::now().timestamp() as u64;
+
+            // Save updated session
+            self.save_user_session(&session).await?;
+
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Update session activity timestamp.
+    pub async fn update_session_activity(&self, session_name: &str) -> Result<()> {
+        // Try to find session by name
+        if let Some(session_id) = self.get_session_id_by_name(session_name).await? {
+            if let Some(mut session) = self.get_user_session(&session_id).await? {
+                session.last_activity = chrono::Utc::now().timestamp() as u64;
+                self.save_user_session(&session).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get session by name (for activity updates).
+    pub async fn get_session_by_name(&self, session_name: &str) -> Result<Option<UserSession>> {
+        if let Some(session_id) = self.get_session_id_by_name(session_name).await? {
+            self.get_user_session(&session_id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn save_user_session(&self, session: &UserSession) -> Result<()> {
+        let mut conn = self.redis.get().await?;
+        let session_json = serde_json::to_string(session)?;
+
+        // Save session data
+        conn.set::<_, _, ()>(format!("session:id:{}", session.id), &session_json)
+            .await?;
+
+        // Create session name -> session ID mapping
+        conn.set::<_, _, ()>(format!("session:name:{}", session.name), &session.id)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_user_session(&self, session_id: &str) -> Result<Option<UserSession>> {
+        let mut conn = self.redis.get().await?;
+        let session_json: Option<String> = conn.get(format!("session:id:{}", session_id)).await?;
+
+        if let Some(session_json) = session_json {
+            let session: UserSession = serde_json::from_str(&session_json)?;
+            Ok(Some(session))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get_session_id_by_name(&self, session_name: &str) -> Result<Option<String>> {
+        let mut conn = self.redis.get().await?;
+        let session_id: Option<String> = conn.get(format!("session:name:{}", session_name)).await?;
+        Ok(session_id)
+    }
+
+    async fn add_session_to_user(&self, user_id: &str, session_id: &str) -> Result<()> {
+        let mut conn = self.redis.get().await?;
+        conn.sadd::<_, _, ()>(format!("user:sessions:{}", user_id), session_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_user_session_ids(&self, user_id: &str) -> Result<Vec<String>> {
+        let mut conn = self.redis.get().await?;
+        let session_ids: Vec<String> = conn.smembers(format!("user:sessions:{}", user_id)).await?;
+        Ok(session_ids)
     }
 }

@@ -17,8 +17,28 @@
   import TeaserVideo from "$lib/ui/TeaserVideo.svelte";
   import CopyableCode from "$lib/ui/CopyableCode.svelte";
   import DownloadLink from "$lib/ui/DownloadLink.svelte";
+  import AuthModal from "$lib/ui/AuthModal.svelte";
+  import { user, authService } from "$lib/auth";
+  import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
+  import { UserIcon, LogOutIcon } from "svelte-feather-icons";
 
   let installationEl: HTMLDivElement;
+  let showAuthModal = false;
+
+  // 在组件挂载时恢复用户状态
+  onMount(() => {
+    authService.restoreUser();
+  });
+
+  function handleAuthSuccess(event: CustomEvent) {
+    // 登录成功后跳转到 home 页面
+    goto('/home');
+  }
+
+  function handleLogout() {
+    authService.logout();
+  }
 
   const socials = [
     {
@@ -47,8 +67,41 @@
 <main
   class="max-w-screen-xl mx-auto px-4 md:px-8 lg:px-16 text-zinc-100 overflow-x-hidden"
 >
-  <header class="mt-6 mb-4 sm:my-8 md:my-12">
+  <header class="mt-6 mb-4 sm:my-8 md:my-12 flex items-center justify-between">
     <img class="h-12 sm:h-16 -mx-1" src={logotypeDark} alt="sshx logo" />
+    
+    <!-- 用户登录/注册入口 -->
+    <div class="flex items-center space-x-3">
+      {#if $user}
+        <!-- 已登录用户 -->
+        <div class="flex items-center space-x-3">
+          <span class="text-zinc-300 text-sm">欢迎, {$user.email}</span>
+          <button
+            class="flex items-center space-x-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-2 rounded-md transition-colors"
+            on:click={() => goto('/home')}
+          >
+            <UserIcon size="16" />
+            <span>控制台</span>
+          </button>
+          <button
+            class="flex items-center space-x-2 text-zinc-400 hover:text-zinc-200 px-2 py-2 rounded-md transition-colors"
+            on:click={handleLogout}
+            title="退出登录"
+          >
+            <LogOutIcon size="16" />
+          </button>
+        </div>
+      {:else}
+        <!-- 未登录用户 -->
+        <button
+          class="flex items-center space-x-2 bg-pink-700 hover:bg-pink-600 text-white px-4 py-2 rounded-md transition-colors"
+          on:click={() => showAuthModal = true}
+        >
+          <UserIcon size="16" />
+          <span>登录 / 注册</span>
+        </button>
+      {/if}
+    </div>
   </header>
   <h1
     class="font-medium text-3xl sm:text-4xl md:text-5xl max-w-[26ch] py-2 mb-6 md:mb-0 sm:tracking-tight leading-[1.15]"
@@ -278,6 +331,13 @@
     open source, &copy; Eric Zhang 2023
   </p>
 </main>
+
+<!-- 认证模态框 -->
+<AuthModal 
+  bind:isOpen={showAuthModal} 
+  on:success={handleAuthSuccess}
+  on:close={() => showAuthModal = false}
+/>
 
 <style lang="postcss">
   b {

@@ -176,7 +176,7 @@ impl SshxService for GrpcServer {
         }
 
         // Check if this is a user-authenticated session
-        let (name, user_id) = if let Some(user_api_key) = request.user_api_key {
+        let (name, user_id, api_key_id) = if let Some(user_api_key) = request.user_api_key {
             // Verify the API key and get associated user
             let user_id = self
                 .user_service
@@ -184,6 +184,19 @@ impl SshxService for GrpcServer {
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?
                 .ok_or_else(|| Status::unauthenticated("Invalid API key"))?;
+
+            // Get API key ID for session tracking
+            let api_key_id = if let Some(user) = self
+                .user_service
+                .get_user_by_id(&user_id)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?
+            {
+                user.get_api_key_by_token(&user_api_key)
+                    .map(|k| k.id.clone())
+            } else {
+                None
+            };
 
             // Generate session name based on user ID and timestamp
             let session_name = format!("user-{}-{}", &user_id[..8], chrono::Utc::now().timestamp());
@@ -193,10 +206,10 @@ impl SshxService for GrpcServer {
                 warn!(?err, "failed to update API key usage");
             }
 
-            (session_name, Some(user_id))
+            (session_name, Some(user_id), api_key_id)
         } else {
             // Generate random session name for anonymous users
-            (rand_alphanumeric(10), None)
+            (rand_alphanumeric(10), None, None)
         };
 
         info!(%name, ?user_id, "creating new session");
@@ -216,9 +229,18 @@ impl SshxService for GrpcServer {
         let token = self.state.mac().chain_update(&name).finalize();
         let url = format!("{origin}/s/{name}");
 
-        // Log user session creation if this is a user session
+        // Create user session record if this is a user session
         if let Some(ref user_id) = user_id {
             info!(%name, %user_id, %url, "created user session");
+
+            // Create session record in database
+            if let Err(err) = self
+                .user_service
+                .create_user_session(user_id, &name, &url, api_key_id)
+                .await
+            {
+                warn!(?err, "failed to create user session record");
+            }
         }
 
         Ok(Response::new(OpenResponse {

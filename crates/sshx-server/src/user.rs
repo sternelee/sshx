@@ -128,6 +128,52 @@ pub struct ApiKeyInfo {
     pub is_active: bool,
 }
 
+/// User session information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSession {
+    /// Session unique identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// Session URL.
+    pub url: String,
+    /// User ID who owns this session.
+    pub user_id: String,
+    /// API key used to create this session.
+    pub api_key_id: Option<String>,
+    /// Session creation timestamp.
+    pub created_at: u64,
+    /// Last activity timestamp.
+    pub last_activity: u64,
+    /// Whether the session is currently active.
+    pub is_active: bool,
+    /// Session metadata.
+    pub metadata: Option<String>,
+}
+
+/// Request to list user sessions.
+#[derive(Debug, Deserialize)]
+pub struct ListUserSessionsRequest {
+    /// JWT authentication token.
+    pub auth_token: String,
+}
+
+/// Response containing list of user sessions.
+#[derive(Debug, Serialize)]
+pub struct ListUserSessionsResponse {
+    /// List of user sessions.
+    pub sessions: Vec<UserSession>,
+}
+
+/// Request to close a user session.
+#[derive(Debug, Deserialize)]
+pub struct CloseUserSessionRequest {
+    /// JWT authentication token.
+    pub auth_token: String,
+    /// Session ID to close.
+    pub session_id: String,
+}
+
 impl User {
     /// Create a new user with hashed password.
     pub fn new(email: String, password: &str) -> Result<Self> {
