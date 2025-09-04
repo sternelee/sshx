@@ -13,6 +13,12 @@ service SshxService {
 
   // Gracefully shut down an existing SSH session.
   rpc Close(CloseRequest) returns (CloseResponse);
+
+  // Register a new user account.
+  rpc Register(RegisterRequest) returns (AuthResponse);
+
+  // Login with email and password.
+  rpc Login(LoginRequest) returns (AuthResponse);
 }
 
 // Details of bytes exchanged with the terminal.
@@ -96,6 +102,25 @@ message CloseRequest {
 
 // Server response to closing a session.
 message CloseResponse {}
+
+// Request to register a new user.
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// Request to login with credentials.
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+// Response containing authentication token and user info.
+message AuthResponse {
+  string token = 1;
+  string user_id = 2;
+  string email = 3;
+}
 
 // Snapshot of a session, used to restore state for persistence across servers.
 message SerializedSession {

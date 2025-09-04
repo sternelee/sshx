@@ -7,7 +7,8 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 use hmac::Mac;
 use sshx_core::proto::{
     client_update::ClientMessage, server_update::ServerMessage, sshx_service_server::SshxService,
-    ClientUpdate, CloseRequest, CloseResponse, OpenRequest, OpenResponse, ServerUpdate,
+    AuthResponse, ClientUpdate, CloseRequest, CloseResponse, LoginRequest, OpenRequest,
+    OpenResponse, RegisterRequest, ServerUpdate,
 };
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
@@ -17,6 +18,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
 use crate::session::{Metadata, Session};
+use crate::user_service::UserService;
 use crate::ServerState;
 
 /// Interval for synchronizing sequence numbers with the client.
@@ -27,12 +29,18 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Server that handles gRPC requests from the sshx command-line client.
 #[derive(Clone)]
-pub struct GrpcServer(Arc<ServerState>);
+pub struct GrpcServer {
+    state: Arc<ServerState>,
+    user_service: Arc<UserService>,
+}
 
 impl GrpcServer {
     /// Construct a new [`GrpcServer`] instance with associated state.
-    pub fn new(state: Arc<ServerState>) -> Self {
-        Self(state)
+    pub fn new(state: Arc<ServerState>, user_service: Arc<UserService>) -> Self {
+        Self {
+            state,
+            user_service,
+        }
     }
 }
 
@@ -42,16 +50,50 @@ type RR<T> = Result<Response<T>, Status>;
 impl SshxService for GrpcServer {
     type ChannelStream = ReceiverStream<Result<ServerUpdate, Status>>;
 
+    async fn register(&self, request: Request<RegisterRequest>) -> RR<AuthResponse> {
+        let request = request.into_inner();
+        let req = crate::user::RegisterRequest {
+            email: request.email,
+            password: request.password,
+        };
+
+        match self.user_service.register(req).await {
+            Ok(auth_response) => Ok(Response::new(AuthResponse {
+                token: auth_response.token,
+                user_id: auth_response.user_id,
+                email: auth_response.email,
+            })),
+            Err(err) => Err(Status::invalid_argument(err.to_string())),
+        }
+    }
+
+    async fn login(&self, request: Request<LoginRequest>) -> RR<AuthResponse> {
+        let request = request.into_inner();
+        let req = crate::user::LoginRequest {
+            email: request.email,
+            password: request.password,
+        };
+
+        match self.user_service.login(req).await {
+            Ok(auth_response) => Ok(Response::new(AuthResponse {
+                token: auth_response.token,
+                user_id: auth_response.user_id,
+                email: auth_response.email,
+            })),
+            Err(err) => Err(Status::unauthenticated(err.to_string())),
+        }
+    }
+
     async fn open(&self, request: Request<OpenRequest>) -> RR<OpenResponse> {
         let request = request.into_inner();
-        let origin = self.0.override_origin().unwrap_or(request.origin);
+        let origin = self.state.override_origin().unwrap_or(request.origin);
         if origin.is_empty() {
             return Err(Status::invalid_argument("origin is empty"));
         }
         let name = rand_alphanumeric(10);
         info!(%name, "creating new session");
 
-        match self.0.lookup(&name) {
+        match self.state.lookup(&name) {
             Some(_) => return Err(Status::already_exists("generated duplicate ID")),
             None => {
                 let metadata = Metadata {
@@ -59,10 +101,10 @@ impl SshxService for GrpcServer {
                     name: request.name,
                     write_password_hash: request.write_password_hash,
                 };
-                self.0.insert(&name, Arc::new(Session::new(metadata)));
+                self.state.insert(&name, Arc::new(Session::new(metadata)));
             }
         };
-        let token = self.0.mac().chain_update(&name).finalize();
+        let token = self.state.mac().chain_update(&name).finalize();
         let url = format!("{origin}/s/{name}");
         Ok(Response::new(OpenResponse {
             name,
@@ -82,12 +124,12 @@ impl SshxService for GrpcServer {
                 let (name, token) = hello
                     .split_once(',')
                     .ok_or_else(|| Status::invalid_argument("missing name and token"))?;
-                validate_token(self.0.mac(), name, token)?;
+                validate_token(self.state.mac(), name, token)?;
                 name.to_string()
             }
             _ => return Err(Status::invalid_argument("invalid first message")),
         };
-        let session = match self.0.backend_connect(&session_name).await {
+        let session = match self.state.backend_connect(&session_name).await {
             Ok(Some(session)) => session,
             Ok(None) => return Err(Status::not_found("session not found")),
             Err(err) => {
@@ -111,9 +153,9 @@ impl SshxService for GrpcServer {
 
     async fn close(&self, request: Request<CloseRequest>) -> RR<CloseResponse> {
         let request = request.into_inner();
-        validate_token(self.0.mac(), &request.name, &request.token)?;
+        validate_token(self.state.mac(), &request.name, &request.token)?;
         info!("closing session {}", request.name);
-        if let Err(err) = self.0.close_session(&request.name).await {
+        if let Err(err) = self.state.close_session(&request.name).await {
             error!(?err, "failed to close session {}", request.name);
             return Err(Status::internal(err.to_string()));
         }

@@ -15,6 +15,7 @@ use tracing::error;
 
 use self::mesh::StorageMesh;
 use crate::session::Session;
+use crate::user_service::UserService;
 use crate::ServerOptions;
 
 pub mod mesh;
@@ -39,6 +40,9 @@ pub struct ServerState {
 
     /// Storage and distributed communication provider, if enabled.
     mesh: Option<StorageMesh>,
+
+    /// User authentication service.
+    user_service: Option<Arc<UserService>>,
 }
 
 impl ServerState {
@@ -46,14 +50,26 @@ impl ServerState {
     pub fn new(options: ServerOptions) -> Result<Self> {
         let secret = options.secret.unwrap_or_else(|| rand_alphanumeric(22));
         let mesh = match options.redis_url {
-            Some(url) => Some(StorageMesh::new(&url, options.host.as_deref())?),
+            Some(ref url) => Some(StorageMesh::new(url, options.host.as_deref())?),
             None => None,
         };
+
+        // Create user service if Redis is available
+        let user_service = match options.redis_url {
+            Some(ref url) => {
+                let redis_pool = deadpool_redis::Config::from_url(url)
+                    .create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+                Some(Arc::new(UserService::new(redis_pool, secret.clone())))
+            }
+            None => None,
+        };
+
         Ok(Self {
             mac: Hmac::new_from_slice(secret.as_bytes()).unwrap(),
             override_origin: options.override_origin,
             store: DashMap::new(),
             mesh,
+            user_service,
         })
     }
 
@@ -176,6 +192,11 @@ impl ServerState {
                 }
             }
         }
+    }
+
+    /// Get the user service if available.
+    pub fn user_service(&self) -> Option<Arc<UserService>> {
+        self.user_service.clone()
     }
 
     /// Send a graceful shutdown signal to every session.

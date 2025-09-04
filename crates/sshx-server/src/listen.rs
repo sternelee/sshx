@@ -30,8 +30,23 @@ where
         .into_service()
         .boxed_clone();
 
+    let user_service = match state.user_service() {
+        Some(service) => service,
+        None => {
+            // Create a dummy user service if Redis is not available
+            // This will fail gracefully when authentication is attempted
+            let dummy_pool = deadpool_redis::Config::from_url("redis://localhost:6379")
+                .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+                .expect("Failed to create dummy Redis pool");
+            Arc::new(crate::user_service::UserService::new(
+                dummy_pool,
+                "dummy_secret".to_string(),
+            ))
+        }
+    };
+
     let grpc_service = TonicRoutes::default()
-        .add_service(SshxServiceServer::new(GrpcServer::new(state)))
+        .add_service(SshxServiceServer::new(GrpcServer::new(state, user_service)))
         .add_service(
             tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)

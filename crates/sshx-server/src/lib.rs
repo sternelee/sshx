@@ -26,6 +26,10 @@ pub mod grpc;
 mod listen;
 pub mod session;
 pub mod state;
+/// User authentication and management.
+pub mod user;
+/// User service for authentication operations.
+pub mod user_service;
 pub mod utils;
 pub mod web;
 
