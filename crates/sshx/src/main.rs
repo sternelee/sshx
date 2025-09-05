@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use ansi_term::Color::{Cyan, Fixed, Green};
 use anyhow::Result;
 use clap::Parser;
-use sshx::{controller::Controller, runner::Runner, terminal::get_default_shell};
+use sshx::{controller::Controller, runner::Runner, terminal::get_default_shell, session_persistence::SessionPersistence};
 use tokio::signal;
 use tracing::error;
 
@@ -33,8 +33,13 @@ struct Args {
     enable_readers: bool,
 
     /// User API key for authenticated sessions.
+    /// When provided, enables session persistence to maintain consistent URLs across restarts.
     #[clap(long, env = "SSHX_API_KEY")]
     api_key: Option<String>,
+
+    /// Clean up old session files (older than specified days).
+    #[clap(long)]
+    cleanup_sessions: Option<u64>,
 }
 
 fn print_greeting(shell: &str, controller: &Controller) {
@@ -42,10 +47,17 @@ fn print_greeting(shell: &str, controller: &Controller) {
         Some(version) => format!("v{version}"),
         None => String::from("[dev]"),
     };
+    
+    let status_indicator = if controller.is_restored() {
+        format!(" {}", Fixed(8).paint("(restored)"))
+    } else {
+        String::new()
+    };
+
     if let Some(write_url) = controller.write_url() {
         println!(
             r#"
-  {sshx} {version}
+  {sshx} {version}{status}
 
   {arr}  Read-only link: {link_v}
   {arr}  Writable link:  {link_e}
@@ -53,6 +65,7 @@ fn print_greeting(shell: &str, controller: &Controller) {
 "#,
             sshx = Green.bold().paint("sshx"),
             version = Green.paint(&version_str),
+            status = status_indicator,
             arr = Green.paint("➜"),
             link_v = Cyan.underline().paint(controller.url()),
             link_e = Cyan.underline().paint(write_url),
@@ -61,13 +74,14 @@ fn print_greeting(shell: &str, controller: &Controller) {
     } else {
         println!(
             r#"
-  {sshx} {version}
+  {sshx} {version}{status}
 
   {arr}  Link:  {link_v}
   {arr}  Shell: {shell_v}
 "#,
             sshx = Green.bold().paint("sshx"),
             version = Green.paint(&version_str),
+            status = status_indicator,
             arr = Green.paint("➜"),
             link_v = Cyan.underline().paint(controller.url()),
             shell_v = Fixed(8).paint(shell),
@@ -77,6 +91,13 @@ fn print_greeting(shell: &str, controller: &Controller) {
 
 #[tokio::main]
 async fn start(args: Args) -> Result<()> {
+    // Handle session cleanup if requested
+    if let Some(max_age_days) = args.cleanup_sessions {
+        let persistence = SessionPersistence::new()?;
+        let removed_count = persistence.cleanup_old_sessions(max_age_days)?;
+        println!("Cleaned up {} old session files", removed_count);
+        return Ok(());
+    }
     let shell = match args.shell {
         Some(shell) => shell,
         None => get_default_shell().await,
@@ -94,12 +115,17 @@ async fn start(args: Args) -> Result<()> {
     });
 
     let runner = Runner::Shell(shell.clone());
-    let mut controller = Controller::new(
+    
+    // Enable session persistence only when using API key
+    let enable_persistence = args.api_key.is_some();
+    
+    let mut controller = Controller::new_with_persistence(
         &args.server,
         &name,
         runner,
         args.enable_readers,
         args.api_key,
+        enable_persistence,
     )
     .await?;
     if args.quiet {

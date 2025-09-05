@@ -14,10 +14,11 @@ use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::transport::Channel;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
+use crate::session_persistence::{SessionPersistence, SessionState};
 
 /// Interval for sending empty heartbeat messages to the server.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
@@ -37,6 +38,13 @@ pub struct Controller {
     url: String,
     write_url: Option<String>,
 
+    /// Session persistence manager.
+    persistence: SessionPersistence,
+    /// Session ID for persistence.
+    session_id: String,
+    /// Whether this session was restored from disk.
+    is_restored: bool,
+
     /// Channels with backpressure routing messages to each shell task.
     shells_tx: HashMap<Sid, mpsc::Sender<ShellData>>,
     /// Channel shared with tasks to allow them to output client messages.
@@ -47,6 +55,7 @@ pub struct Controller {
 
 impl Controller {
     /// Construct a new controller, connecting to the remote server.
+    /// Attempts to restore from a previous session if possible.
     pub async fn new(
         origin: &str,
         name: &str,
@@ -54,7 +63,78 @@ impl Controller {
         enable_readers: bool,
         api_key: Option<String>,
     ) -> Result<Self> {
+        Self::new_with_persistence(origin, name, runner, enable_readers, api_key, true).await
+    }
+
+    /// Construct a new controller with optional session persistence.
+    pub async fn new_with_persistence(
+        origin: &str,
+        name: &str,
+        runner: Runner,
+        enable_readers: bool,
+        api_key: Option<String>,
+        enable_persistence: bool,
+    ) -> Result<Self> {
         debug!(%origin, "connecting to server");
+
+        let persistence = SessionPersistence::new()?;
+        let session_id = SessionPersistence::generate_session_id(
+            api_key.as_deref(),
+            origin,
+            std::env::current_dir().ok().as_deref(),
+        );
+
+        // Try to restore existing session if persistence is enabled
+        if enable_persistence {
+            if let Some(restored_state) = persistence.load_session(&session_id)? {
+                // Check if the session is still valid (not too old)
+                if persistence.is_session_valid(&restored_state, 24) {
+                    // Verify the session still exists on the server
+                    if let Ok(controller) = Self::restore_from_state(
+                        restored_state,
+                        runner,
+                        persistence,
+                        session_id,
+                    ).await {
+                        info!("Successfully restored session from previous run");
+                        return Ok(controller);
+                    } else {
+                        warn!("Failed to restore session, creating new one");
+                        // Remove invalid session file
+                        let _ = persistence.remove_session(&session_id);
+                    }
+                } else {
+                    info!("Previous session too old, creating new one");
+                    // Remove expired session file
+                    let _ = persistence.remove_session(&session_id);
+                }
+            }
+        }
+
+        // Create new session
+        Self::create_new_session(
+            origin,
+            name,
+            runner,
+            enable_readers,
+            api_key,
+            persistence,
+            session_id,
+            enable_persistence,
+        ).await
+    }
+
+    /// Create a completely new session.
+    async fn create_new_session(
+        origin: &str,
+        name: &str,
+        runner: Runner,
+        enable_readers: bool,
+        api_key: Option<String>,
+        persistence: SessionPersistence,
+        session_id: String,
+        enable_persistence: bool,
+    ) -> Result<Self> {
         let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
 
         let kdf_task = {
@@ -86,16 +166,38 @@ impl Controller {
             encrypted_zeros: encrypt.zeros().into(),
             name: name.into(),
             write_password_hash,
-            user_api_key: api_key,
+            user_api_key: api_key.clone(),
         };
         let mut resp = client.open(req).await?.into_inner();
         resp.url = resp.url + "#" + &encryption_key;
 
-        let write_url = if let Some(write_password) = write_password {
-            Some(resp.url.clone() + "," + &write_password)
+        let write_url = if let Some(ref write_password) = write_password {
+            Some(resp.url.clone() + "," + write_password)
         } else {
             None
         };
+
+        // Save session state for future restoration
+        if enable_persistence {
+            let session_state = SessionState {
+                session_id: session_id.clone(),
+                encryption_key: encryption_key.clone(),
+                write_password: write_password.clone(),
+                session_name: resp.name.clone(),
+                session_token: resp.token.clone(),
+                base_url: resp.url.split('#').next().unwrap_or(&resp.url).to_string(),
+                full_url: resp.url.clone(),
+                write_url: write_url.clone(),
+                server_origin: origin.to_string(),
+                api_key: api_key.clone(),
+                created_at: chrono::Utc::now().timestamp() as u64,
+                last_accessed: chrono::Utc::now().timestamp() as u64,
+            };
+
+            if let Err(err) = persistence.save_session(&session_state) {
+                warn!("Failed to save session state: {}", err);
+            }
+        }
 
         let (output_tx, output_rx) = mpsc::channel(64);
         Ok(Self {
@@ -107,6 +209,61 @@ impl Controller {
             token: resp.token,
             url: resp.url,
             write_url,
+            persistence,
+            session_id,
+            is_restored: false,
+            shells_tx: HashMap::new(),
+            output_tx,
+            output_rx,
+        })
+    }
+
+    /// Restore controller from saved session state.
+    async fn restore_from_state(
+        state: SessionState,
+        runner: Runner,
+        persistence: SessionPersistence,
+        session_id: String,
+    ) -> Result<Self> {
+        debug!("Attempting to restore session: {}", state.session_name);
+
+        // Recreate encryption objects
+        let encrypt = {
+            let encryption_key = state.encryption_key.clone();
+            task::spawn_blocking(move || Encrypt::new(&encryption_key)).await?
+        };
+
+        // Test connection to server to verify session is still valid
+        let mut client = Self::connect(&state.server_origin).await?;
+        
+        // Try to establish a channel connection to verify the session exists
+        let hello = ClientMessage::Hello(format!("{},{}", state.session_name, state.session_token));
+        let (tx, rx) = mpsc::channel(16);
+        
+        // Send hello message
+        let update = ClientUpdate {
+            client_message: Some(hello),
+        };
+        tx.send(update).await.context("Failed to send hello message")?;
+        
+        // Try to establish channel - if this fails, the session doesn't exist
+        let _resp = client.channel(ReceiverStream::new(rx)).await
+            .context("Session no longer exists on server")?;
+
+        // Session is valid, create controller
+        let (output_tx, output_rx) = mpsc::channel(64);
+        Ok(Self {
+            origin: state.server_origin,
+            runner,
+            encrypt,
+            encryption_key: state.encryption_key,
+            name: state.session_name,
+            token: state.session_token,
+            url: state.full_url,
+            write_url: state.write_url,
+            persistence,
+            session_id,
+            is_restored: true,
             shells_tx: HashMap::new(),
             output_tx,
             output_rx,
@@ -140,6 +297,16 @@ impl Controller {
     /// Returns the encryption key for this session, hidden from the server.
     pub fn encryption_key(&self) -> &str {
         &self.encryption_key
+    }
+
+    /// Returns whether this session was restored from a previous run.
+    pub fn is_restored(&self) -> bool {
+        self.is_restored
+    }
+
+    /// Returns the session ID used for persistence.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     /// Run the controller forever, listening for requests from the server.
@@ -278,6 +445,12 @@ impl Controller {
     /// Terminate this session gracefully.
     pub async fn close(&self) -> Result<()> {
         debug!("closing session");
+        
+        // Remove session state from disk
+        if let Err(err) = self.persistence.remove_session(&self.session_id) {
+            warn!("Failed to remove session state: {}", err);
+        }
+
         let req = CloseRequest {
             name: self.name.clone(),
             token: self.token.clone(),
@@ -285,6 +458,17 @@ impl Controller {
         let mut client = Self::connect(&self.origin).await?;
         client.close(req).await?;
         Ok(())
+    }
+
+    /// Update session access time for persistence.
+    pub fn update_access_time(&self) {
+        // This could be called periodically to update the last_accessed time
+        // For now, we'll update it when the session is saved
+    }
+
+    /// Clean up old session files.
+    pub fn cleanup_old_sessions(&self, max_age_days: u64) -> Result<usize> {
+        self.persistence.cleanup_old_sessions(max_age_days)
     }
 }
 
