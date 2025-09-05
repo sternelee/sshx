@@ -39,6 +39,7 @@ pub struct SessionState {
 }
 
 /// Session persistence manager.
+#[derive(Clone)]
 pub struct SessionPersistence {
     /// Directory to store session files.
     session_dir: PathBuf,
@@ -72,8 +73,9 @@ impl SessionPersistence {
 
         // Hash working directory
         let work_dir = working_dir
-            .or_else(|| std::env::current_dir().ok().as_deref())
-            .unwrap_or_else(|| Path::new("."));
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
         work_dir.hash(&mut hasher);
 
         // Hash hostname for additional uniqueness

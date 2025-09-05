@@ -91,7 +91,7 @@ impl Controller {
                 if persistence.is_session_valid(&restored_state, 24) {
                     // Verify the session still exists on the server
                     if let Ok(controller) =
-                        Self::restore_from_state(restored_state, runner, persistence, session_id)
+                        Self::restore_from_state(restored_state, runner.clone(), &persistence, &session_id)
                             .await
                     {
                         info!("Successfully restored session from previous run");
@@ -221,8 +221,8 @@ impl Controller {
     async fn restore_from_state(
         state: SessionState,
         runner: Runner,
-        persistence: SessionPersistence,
-        session_id: String,
+        persistence: &SessionPersistence,
+        session_id: &str,
     ) -> Result<Self> {
         debug!("Attempting to restore session: {}", state.session_name);
 
@@ -264,8 +264,8 @@ impl Controller {
             token: state.session_token,
             url: state.full_url,
             write_url: state.write_url,
-            persistence,
-            session_id,
+            persistence: persistence.clone(),
+            session_id: session_id.to_string(),
             is_restored: true,
             shells_tx: HashMap::new(),
             output_tx,
