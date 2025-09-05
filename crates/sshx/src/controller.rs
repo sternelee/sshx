@@ -90,12 +90,10 @@ impl Controller {
                 // Check if the session is still valid (not too old)
                 if persistence.is_session_valid(&restored_state, 24) {
                     // Verify the session still exists on the server
-                    if let Ok(controller) = Self::restore_from_state(
-                        restored_state,
-                        runner,
-                        persistence,
-                        session_id,
-                    ).await {
+                    if let Ok(controller) =
+                        Self::restore_from_state(restored_state, runner, persistence, session_id)
+                            .await
+                    {
                         info!("Successfully restored session from previous run");
                         return Ok(controller);
                     } else {
@@ -121,7 +119,8 @@ impl Controller {
             persistence,
             session_id,
             enable_persistence,
-        ).await
+        )
+        .await
     }
 
     /// Create a completely new session.
@@ -235,19 +234,23 @@ impl Controller {
 
         // Test connection to server to verify session is still valid
         let mut client = Self::connect(&state.server_origin).await?;
-        
+
         // Try to establish a channel connection to verify the session exists
         let hello = ClientMessage::Hello(format!("{},{}", state.session_name, state.session_token));
         let (tx, rx) = mpsc::channel(16);
-        
+
         // Send hello message
         let update = ClientUpdate {
             client_message: Some(hello),
         };
-        tx.send(update).await.context("Failed to send hello message")?;
-        
+        tx.send(update)
+            .await
+            .context("Failed to send hello message")?;
+
         // Try to establish channel - if this fails, the session doesn't exist
-        let _resp = client.channel(ReceiverStream::new(rx)).await
+        let _resp = client
+            .channel(ReceiverStream::new(rx))
+            .await
             .context("Session no longer exists on server")?;
 
         // Session is valid, create controller
@@ -445,7 +448,7 @@ impl Controller {
     /// Terminate this session gracefully.
     pub async fn close(&self) -> Result<()> {
         debug!("closing session");
-        
+
         // Remove session state from disk
         if let Err(err) = self.persistence.remove_session(&self.session_id) {
             warn!("Failed to remove session state: {}", err);

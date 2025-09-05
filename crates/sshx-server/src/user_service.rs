@@ -1,5 +1,5 @@
 use crate::user::{
-    ApiKeyResponse, AuthResponse, CloseUserSessionRequest, DeleteApiKeyRequest,
+    ApiKeyPermission, ApiKeyResponse, AuthResponse, CloseUserSessionRequest, DeleteApiKeyRequest,
     GenerateApiKeyRequest, ListApiKeysRequest, ListApiKeysResponse, ListUserSessionsRequest,
     ListUserSessionsResponse, LoginRequest, RegisterRequest, User, UserApiKey, UserSession,
 };
@@ -14,6 +14,33 @@ use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+/// Rate limiting configuration for API keys.
+#[derive(Debug, Clone)]
+pub struct RateLimitConfig {
+    /// Maximum requests per window.
+    pub max_requests: u64,
+    /// Time window in seconds.
+    pub window_seconds: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_requests: 1000,
+            window_seconds: 3600, // 1 hour
+        }
+    }
+}
+
+/// Rate limit tracking data.
+#[derive(Debug, Serialize, Deserialize)]
+struct RateLimitData {
+    /// Number of requests in current window.
+    pub requests: u64,
+    /// Window start timestamp.
+    pub window_start: u64,
+}
 
 /// JWT token claims structure.
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,20 +57,35 @@ pub struct Claims {
 pub struct UserService {
     redis: deadpool_redis::Pool,
     jwt_secret: String,
+    rate_limit_config: RateLimitConfig,
 }
 
 impl UserService {
     /// Create a new user service with Redis connection pool and JWT secret.
     pub fn new(redis: deadpool_redis::Pool, jwt_secret: String) -> Self {
-        Self { redis, jwt_secret }
+        Self {
+            redis,
+            jwt_secret,
+            rate_limit_config: RateLimitConfig::default(),
+        }
+    }
+
+    /// Create a new user service with custom rate limiting.
+    pub fn with_rate_limit(
+        redis: deadpool_redis::Pool,
+        jwt_secret: String,
+        rate_limit_config: RateLimitConfig,
+    ) -> Self {
+        Self {
+            redis,
+            jwt_secret,
+            rate_limit_config,
+        }
     }
 
     /// Register a new user account.
     pub async fn register(&self, req: RegisterRequest) -> Result<AuthResponse> {
-        // Validate email format
-        if !self.is_valid_email(&req.email) {
-            return Err(anyhow!("Invalid email format"));
-        }
+        // Email and password validation is now handled in User::new()
 
         // Check if user already exists
         if self.user_exists(&req.email).await? {
@@ -114,6 +156,11 @@ impl UserService {
             .await?
             .ok_or_else(|| anyhow!("User not found"))?;
 
+        // Check if user can create more API keys
+        if !user.can_create_api_key() {
+            return Err(anyhow!("Maximum number of API keys reached"));
+        }
+
         // Generate unique API key ID and token
         let api_key_id = Uuid::new_v4().to_string();
         let token_data = format!("{}:{}", api_key_id, rand_alphanumeric(32));
@@ -124,15 +171,21 @@ impl UserService {
         mac.update(token_data.as_bytes());
         let api_key_token = BASE64_STANDARD.encode(mac.finalize().into_bytes());
 
-        // Create user API key record
-        let user_api_key = UserApiKey {
-            id: api_key_id.clone(),
-            name: req.name.clone(),
-            token: api_key_token.clone(),
-            created_at: chrono::Utc::now().timestamp() as u64,
-            last_used: None,
-            is_active: true,
-        };
+        // Set permissions (use provided or default)
+        let permissions = req
+            .permissions
+            .map(|perms| perms.into_iter().collect())
+            .unwrap_or_else(|| ApiKeyPermission::default_permissions());
+
+        // Create user API key record with new fields
+        let user_api_key = UserApiKey::new(
+            api_key_id.clone(),
+            req.name.clone(),
+            api_key_token.clone(),
+            permissions.clone(),
+            req.expires_in_hours,
+            req.max_usage,
+        );
 
         // Add API key to user and save
         user.add_api_key(user_api_key);
@@ -148,6 +201,11 @@ impl UserService {
             token: api_key_token,
             created_at: chrono::Utc::now().timestamp() as u64,
             user_id: user.id,
+            permissions,
+            expires_at: req
+                .expires_in_hours
+                .map(|hours| chrono::Utc::now().timestamp() as u64 + (hours * 3600)),
+            max_usage: req.max_usage,
         })
     }
 
@@ -199,23 +257,56 @@ impl UserService {
         Ok(ListApiKeysResponse { api_keys })
     }
 
-    /// Verify an API key and return the associated user ID.
+    /// Verify an API key and return the associated user ID with permission checking.
+    pub async fn verify_api_key_with_permission(
+        &self,
+        api_key_token: &str,
+        required_permission: &ApiKeyPermission,
+    ) -> Result<Option<(String, UserApiKey)>> {
+        // Check rate limiting first
+        if !self.check_rate_limit(api_key_token).await? {
+            return Err(anyhow!("Rate limit exceeded for API key"));
+        }
+
+        // First try to get user ID from Redis mapping
+        if let Some(user_id) = self.get_api_key_user(api_key_token).await? {
+            // Get user and verify the API key is still valid
+            if let Some(mut user) = self.get_user_by_id(&user_id).await? {
+                if let Some(api_key) = user.get_api_key_by_token(api_key_token) {
+                    // Check if API key has required permission
+                    if !api_key.has_permission(required_permission) {
+                        return Err(anyhow!("Insufficient permissions"));
+                    }
+
+                    // Update usage tracking
+                    let api_key_id = api_key.id.clone();
+                    let api_key_copy = api_key.clone();
+                    user.update_api_key_usage(&api_key_id);
+                    self.save_user(&user).await?;
+
+                    // Update rate limiting
+                    self.update_rate_limit(api_key_token).await?;
+
+                    return Ok(Some((user_id, api_key_copy)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Verify an API key and return the associated user ID (legacy method).
     pub async fn verify_api_key(&self, api_key_token: &str) -> Result<Option<String>> {
         // First try to get user ID from Redis mapping
         if let Some(user_id) = self.get_api_key_user(&api_key_token).await? {
             // Get user and verify the API key is still valid
             if let Some(mut user) = self.get_user_by_id(&user_id).await? {
-                let api_key_info = user
-                    .get_api_key_by_token(api_key_token)
-                    .map(|k| (k.id.clone(), k.is_active));
+                if let Some(api_key) = user.get_api_key_by_token(api_key_token) {
+                    // Update usage tracking
+                    let api_key_id = api_key.id.clone();
+                    user.update_api_key_usage(&api_key_id);
+                    self.save_user(&user).await?;
 
-                if let Some((api_key_id, is_active)) = api_key_info {
-                    if is_active {
-                        // Update last used timestamp
-                        user.update_api_key_last_used(&api_key_id);
-                        self.save_user(&user).await?;
-                        return Ok(Some(user_id));
-                    }
+                    return Ok(Some(user_id));
                 }
             }
         }
@@ -314,8 +405,64 @@ impl UserService {
         Ok(token)
     }
 
-    fn is_valid_email(&self, email: &str) -> bool {
-        email.contains('@') && email.contains('.')
+    /// Check if API key has exceeded rate limit.
+    async fn check_rate_limit(&self, api_key_token: &str) -> Result<bool> {
+        let mut conn = self.redis.get().await?;
+        let key = format!("rate_limit:{}", api_key_token);
+
+        let rate_data_json: Option<String> = conn.get(&key).await?;
+
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        if let Some(json) = rate_data_json {
+            let mut rate_data: RateLimitData = serde_json::from_str(&json)?;
+
+            // Check if we need to reset the window
+            if now >= rate_data.window_start + self.rate_limit_config.window_seconds {
+                // Reset window
+                rate_data.window_start = now;
+                rate_data.requests = 0;
+            }
+
+            // Check if under limit
+            Ok(rate_data.requests < self.rate_limit_config.max_requests)
+        } else {
+            // First request, allow it
+            Ok(true)
+        }
+    }
+
+    /// Update rate limit counter for API key.
+    async fn update_rate_limit(&self, api_key_token: &str) -> Result<()> {
+        let mut conn = self.redis.get().await?;
+        let key = format!("rate_limit:{}", api_key_token);
+
+        let rate_data_json: Option<String> = conn.get(&key).await?;
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        let rate_data = if let Some(json) = rate_data_json {
+            let mut data: RateLimitData = serde_json::from_str(&json)?;
+
+            // Check if we need to reset the window
+            if now >= data.window_start + self.rate_limit_config.window_seconds {
+                data.window_start = now;
+                data.requests = 1;
+            } else {
+                data.requests += 1;
+            }
+            data
+        } else {
+            RateLimitData {
+                requests: 1,
+                window_start: now,
+            }
+        };
+
+        let json = serde_json::to_string(&rate_data)?;
+        let ttl = self.rate_limit_config.window_seconds;
+
+        conn.set_ex::<_, _, ()>(&key, &json, ttl).await?;
+        Ok(())
     }
 
     /// Create a new user session record.

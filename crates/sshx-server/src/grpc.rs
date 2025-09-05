@@ -56,7 +56,7 @@ impl GrpcServer {
                 .get_api_key_by_token(api_key_token)
                 .map(|k| k.id.clone());
             if let Some(api_key_id) = api_key_id {
-                user.update_api_key_last_used(&api_key_id);
+                user.update_api_key_usage(&api_key_id);
                 self.user_service.save_user(&user).await?;
             }
         }
@@ -112,6 +112,9 @@ impl SshxService for GrpcServer {
         let req = crate::user::GenerateApiKeyRequest {
             auth_token: request.auth_token,
             name: request.name,
+            permissions: None,      // Use default permissions
+            expires_in_hours: None, // No expiration
+            max_usage: None,        // No usage limit
         };
 
         match self.user_service.generate_api_key(req).await {

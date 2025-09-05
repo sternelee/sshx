@@ -31,6 +31,7 @@ redis = { version = "0.27.6", features = [
   "tokio-rustls-comp",
   "tls-rustls-webpki-roots",
 ] }
+regex = "1.10.2"
 serde.workspace = true
 sha2 = "0.10.7"
 sshx-core.workspace = true

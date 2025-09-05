@@ -3,7 +3,10 @@ use std::process::ExitCode;
 use ansi_term::Color::{Cyan, Fixed, Green};
 use anyhow::Result;
 use clap::Parser;
-use sshx::{controller::Controller, runner::Runner, terminal::get_default_shell, session_persistence::SessionPersistence};
+use sshx::{
+    controller::Controller, runner::Runner, session_persistence::SessionPersistence,
+    terminal::get_default_shell,
+};
 use tokio::signal;
 use tracing::error;
 
@@ -47,7 +50,7 @@ fn print_greeting(shell: &str, controller: &Controller) {
         Some(version) => format!("v{version}"),
         None => String::from("[dev]"),
     };
-    
+
     let status_indicator = if controller.is_restored() {
         format!(" {}", Fixed(8).paint("(restored)"))
     } else {
@@ -115,10 +118,10 @@ async fn start(args: Args) -> Result<()> {
     });
 
     let runner = Runner::Shell(shell.clone());
-    
+
     // Enable session persistence only when using API key
     let enable_persistence = args.api_key.is_some();
-    
+
     let mut controller = Controller::new_with_persistence(
         &args.server,
         &name,

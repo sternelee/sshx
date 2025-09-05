@@ -90,8 +90,8 @@ impl SessionPersistence {
     /// Save session state to disk.
     pub fn save_session(&self, state: &SessionState) -> Result<()> {
         let file_path = self.session_dir.join(format!("{}.json", state.session_id));
-        let json_data = serde_json::to_string_pretty(state)
-            .context("Failed to serialize session state")?;
+        let json_data =
+            serde_json::to_string_pretty(state).context("Failed to serialize session state")?;
 
         fs::write(&file_path, json_data)
             .with_context(|| format!("Failed to write session file: {:?}", file_path))?;
@@ -173,7 +173,10 @@ impl SessionPersistence {
         for session in sessions {
             if session.last_accessed < cutoff_time {
                 if let Err(err) = self.remove_session(&session.session_id) {
-                    warn!("Failed to remove old session {}: {}", session.session_id, err);
+                    warn!(
+                        "Failed to remove old session {}: {}",
+                        session.session_id, err
+                    );
                 } else {
                     removed_count += 1;
                     info!("Removed old session: {}", session.session_id);
@@ -234,7 +237,8 @@ mod tests {
         assert_ne!(id1, id3);
 
         // Different server should generate different ID
-        let id4 = SessionPersistence::generate_session_id(api_key, "http://different.com", work_dir);
+        let id4 =
+            SessionPersistence::generate_session_id(api_key, "http://different.com", work_dir);
         assert_ne!(id1, id4);
     }
 
@@ -263,3 +267,4 @@ mod tests {
         assert_eq!(state.api_key, deserialized.api_key);
     }
 }
+
