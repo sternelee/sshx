@@ -8,6 +8,11 @@
 
 pub mod controller;
 pub mod encrypt;
+pub mod p2p;
+pub mod p2p_events;
+pub mod p2p_network;
+pub mod p2p_terminal_sync;
 pub mod runner;
 pub mod session_persistence;
+pub mod string_compressor;
 pub mod terminal;
