@@ -3882,6 +3882,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-gossip",
+ "js-sys",
  "n0-future",
  "prost 0.12.6",
  "rand 0.8.5",

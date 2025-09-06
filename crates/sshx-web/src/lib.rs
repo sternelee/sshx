@@ -80,6 +80,19 @@ impl std::str::FromStr for Ticket {
 #[wasm_bindgen]
 pub struct SshxNode(SshxNodeInner);
 
+/// Session manager for handling multiple P2P sessions
+#[wasm_bindgen]
+pub struct SessionManager {
+    node: SshxNode,
+    sessions: std::collections::HashMap<String, ManagedSession>,
+}
+
+struct ManagedSession {
+    session: Session,
+    active: bool,
+    created_at: js_sys::Date,
+}
+
 struct SshxNodeInner {
     endpoint: Endpoint,
     gossip: Gossip,
@@ -195,6 +208,7 @@ impl SshxNode {
 type SessionReceiver = wasm_streams::readable::sys::ReadableStream;
 
 #[wasm_bindgen]
+#[derive(Clone)]
 pub struct Session {
     topic_id: TopicId,
     nodes: BTreeSet<NodeAddr>,
@@ -250,7 +264,142 @@ impl SessionSender {
     }
 }
 
+#[wasm_bindgen]
+impl SessionManager {
+    /// Creates a new session manager.
+    pub async fn new() -> Result<SessionManager, JsError> {
+        let node = SshxNode::spawn().await?;
+        Ok(SessionManager {
+            node,
+            sessions: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Creates a new session and adds it to the manager.
+    pub async fn create_session(&mut self) -> Result<String, JsError> {
+        let session = self.node.create().await?;
+        let session_id = session.id();
+        let managed_session = ManagedSession {
+            session,
+            active: true,
+            created_at: js_sys::Date::new_0(),
+        };
+        self.sessions.insert(session_id.clone(), managed_session);
+        Ok(session_id)
+    }
+
+    /// Joins an existing session and adds it to the manager.
+    pub async fn join_session(&mut self, ticket: String) -> Result<String, JsError> {
+        let session = self.node.join(ticket.clone()).await?;
+        let session_id = session.id();
+        let managed_session = ManagedSession {
+            session,
+            active: true,
+            created_at: js_sys::Date::new_0(),
+        };
+        self.sessions.insert(session_id.clone(), managed_session);
+        Ok(session_id)
+    }
+
+    /// Gets a session by ID.
+    pub fn get_session(&self, session_id: String) -> Result<Session, JsError> {
+        self.sessions
+            .get(&session_id)
+            .and_then(|ms| if ms.active { Some(&ms.session) } else { None })
+            .cloned()
+            .ok_or_else(|| JsError::new(&format!("Session {} not found or inactive", session_id)))
+    }
+
+    /// Lists all active session IDs.
+    pub fn list_sessions(&self) -> Result<js_sys::Array, JsError> {
+        let sessions = js_sys::Array::new();
+        for (session_id, managed_session) in self.sessions.iter() {
+            if managed_session.active {
+                sessions.push(&JsValue::from_str(session_id));
+            }
+        }
+        Ok(sessions)
+    }
+
+    /// Removes a session from the manager.
+    pub fn remove_session(&mut self, session_id: String) -> Result<bool, JsError> {
+        if let Some(managed_session) = self.sessions.get_mut(&session_id) {
+            managed_session.active = false;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Gets session info including metadata.
+    pub fn get_session_info(&self, session_id: String) -> Result<JsValue, JsError> {
+        if let Some(managed_session) = self.sessions.get(&session_id) {
+            let info = js_sys::Object::new();
+            js_sys_to_js_err(js_sys::Reflect::set(
+                &info,
+                &JsValue::from_str("id"),
+                &JsValue::from_str(&session_id),
+            ))?;
+            js_sys_to_js_err(js_sys::Reflect::set(
+                &info,
+                &JsValue::from_str("active"),
+                &JsValue::from_bool(managed_session.active),
+            ))?;
+            js_sys_to_js_err(js_sys::Reflect::set(
+                &info,
+                &JsValue::from_str("createdAt"),
+                &managed_session.created_at.clone().into(),
+            ))?;
+            js_sys_to_js_err(js_sys::Reflect::set(
+                &info,
+                &JsValue::from_str("ticket"),
+                &JsValue::from_str(&managed_session.session.ticket(true)?),
+            ))?;
+            Ok(info.into())
+        } else {
+            Err(JsError::new(&format!("Session {} not found", session_id)))
+        }
+    }
+
+    /// Broadcasts a message to all active sessions.
+    pub async fn broadcast_to_all(&self, data: Vec<u8>) -> Result<(), JsError> {
+        let mut results = Vec::new();
+        for managed_session in self.sessions.values() {
+            if managed_session.active {
+                let result = managed_session.session.sender().send(data.clone()).await;
+                results.push(result);
+            }
+        }
+
+        // Check if any broadcasts failed
+        for result in results {
+            result?;
+        }
+        Ok(())
+    }
+
+    /// Sends a message to a specific session.
+    pub async fn send_to_session(&self, session_id: String, data: Vec<u8>) -> Result<(), JsError> {
+        if let Some(managed_session) = self.sessions.get(&session_id) {
+            if managed_session.active {
+                managed_session.session.sender().send(data).await?;
+                Ok(())
+            } else {
+                Err(JsError::new(&format!("Session {} is inactive", session_id)))
+            }
+        } else {
+            Err(JsError::new(&format!("Session {} not found", session_id)))
+        }
+    }
+}
+
 fn to_js_err(err: impl Into<anyhow::Error>) -> JsError {
     let err: anyhow::Error = err.into();
     JsError::new(&err.to_string())
+}
+
+fn js_sys_to_js_err(result: Result<bool, JsValue>) -> Result<(), JsError> {
+    result
+        .map_err(|e| JsError::new(&e.as_string().unwrap_or_else(|| "Unknown error".to_string())))?;
+    Ok(())
 }

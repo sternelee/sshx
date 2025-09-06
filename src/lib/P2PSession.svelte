@@ -12,7 +12,7 @@
 
   import { Encrypt } from "./encrypt";
   import { createLock } from "./lock";
-  import { SshxClient } from "./sshx-api";
+  import { SshxClient, MultiSessionSshxClient } from "./sshx-api";
   import type { SshxEvent, User, Winsize } from "./sshx-api";
   import { makeToast } from "./toast";
   import Chat, { type ChatMessage } from "./ui/Chat.svelte";
@@ -95,6 +95,8 @@
 
   let encrypt: Encrypt;
   let sshxClient: SshxClient | null = null;
+let multiSessionClient: MultiSessionSshxClient | null = null;
+let useMultiSession = false;
 
   let connected = false;
   let exitReason: string | null = null;
@@ -141,20 +143,42 @@
       ? await (await Encrypt.new(writePassword)).zeros()
       : null;
 
-    // Initialize P2P SSHX client
-    sshxClient = new SshxClient({
-      onEvent: handleEvent,
-      onConnect: handleConnect,
-      onDisconnect: handleDisconnect,
-      onClose: handleClose,
-    });
+    // Choose between single and multi-session client
+    if (useMultiSession) {
+      multiSessionClient = new MultiSessionSshxClient({
+        onEvent: (event, sessionId) => handleEvent(event, sessionId),
+        onConnect: (sessionId) => handleConnect(sessionId),
+        onDisconnect: (sessionId) => handleDisconnect(sessionId),
+        onClose: (event, sessionId) => handleClose(event, sessionId),
+      });
+
+      // Auto-initialize multi-session client
+      await multiSessionClient.initialize();
+    } else {
+      // Initialize P2P SSHX client
+      sshxClient = new SshxClient({
+        onEvent: handleEvent,
+        onConnect: handleConnect,
+        onDisconnect: handleDisconnect,
+        onClose: handleClose,
+      });
+    }
 
     // Try to create or join session based on URL
     const ticket = new URLSearchParams(window.location.search).get('ticket');
     if (ticket) {
-      await sshxClient.joinSession(ticket);
+      if (useMultiSession) {
+        await multiSessionClient.joinSession(ticket);
+      } else {
+        await sshxClient.joinSession(ticket);
+      }
     } else {
-      const newTicket = await sshxClient.createSession();
+      let newTicket;
+      if (useMultiSession) {
+        newTicket = await multiSessionClient.createSession();
+      } else {
+        newTicket = await sshxClient.createSession();
+      }
       // Update URL with the new ticket
       const url = new URL(window.location.href);
       url.searchParams.set('ticket', newTicket);
@@ -162,7 +186,7 @@
     }
   });
 
-  function handleEvent(event: SshxEvent) {
+  function handleEvent(event: SshxEvent, sessionId?: string) {
     if (event.hello) {
       userId = event.hello[0];
       dispatch("receiveName", event.hello[1]);
@@ -209,7 +233,14 @@
           locks[id] ??= createLock();
           subscriptions.add(id);
           // Send subscribe message
-          sshxClient?.sendCommand({ subscribe: [id, chunknums[id]] });
+          if (useMultiSession) {
+            const activeSessions = multiSessionClient?.getActiveSessions();
+            if (activeSessions && activeSessions.length > 0) {
+              multiSessionClient.sendCommand(activeSessions[0], { subscribe: [id, chunknums[id]] });
+            }
+          } else {
+            sshxClient?.sendCommand({ subscribe: [id, chunknums[id]] });
+          }
         }
       }
     } else if (event.hear) {
@@ -228,19 +259,29 @@
     }
   }
 
-  function handleConnect() {
+  function handleConnect(sessionId?: string) {
     // Send authentication
-    sshxClient?.sendCommand({
-      authenticate: [encryptedZeros, writeEncryptedZeros]
-    });
+    if (useMultiSession && sessionId) {
+      multiSessionClient?.sendCommand(sessionId, {
+        authenticate: [encryptedZeros, writeEncryptedZeros]
+      });
 
-    if ($settings.name) {
-      sshxClient?.sendCommand({ setName: $settings.name });
+      if ($settings.name) {
+        multiSessionClient?.sendCommand(sessionId, { setName: $settings.name });
+      }
+    } else {
+      sshxClient?.sendCommand({
+        authenticate: [encryptedZeros, writeEncryptedZeros]
+      });
+
+      if ($settings.name) {
+        sshxClient?.sendCommand({ setName: $settings.name });
+      }
     }
     connected = true;
   }
 
-  function handleDisconnect() {
+  function handleDisconnect(sessionId?: string) {
     connected = false;
     subscriptions.clear();
     users = [];
@@ -256,12 +297,20 @@
     }
   }
 
-  onDestroy(() => sshxClient?.dispose());
+  onDestroy(() => {
+    sshxClient?.dispose();
+    multiSessionClient?.dispose();
+  });
 
   // Send periodic ping messages for latency estimation.
   onMount(() => {
     const pingIntervalId = window.setInterval(() => {
-      if (sshxClient?.connected) {
+      if (useMultiSession) {
+        const activeSessions = multiSessionClient?.getActiveSessions();
+        if (activeSessions && activeSessions.length > 0) {
+          multiSessionClient.sendCommand(activeSessions[0], { ping: BigInt(Date.now()) });
+        }
+      } else if (sshxClient?.connected) {
         sshxClient.sendCommand({ ping: BigInt(Date.now()) });
       }
     }, 2000);
@@ -280,7 +329,14 @@
   }
 
   $: if ($settings.name) {
-    sshxClient?.sendCommand({ setName: $settings.name });
+    if (useMultiSession) {
+      const activeSessions = multiSessionClient?.getActiveSessions();
+      if (activeSessions && activeSessions.length > 0) {
+        multiSessionClient.sendCommand(activeSessions[0], { setName: $settings.name });
+      }
+    } else {
+      sshxClient?.sendCommand({ setName: $settings.name });
+    }
   }
 
   let counter = 0n;
@@ -307,7 +363,14 @@
       height: termWrappers[id].clientHeight,
     }));
     const { x, y } = arrangeNewTerminal(existing);
-    sshxClient?.sendCommand({ create: [x, y] });
+    if (useMultiSession) {
+      const activeSessions = multiSessionClient?.getActiveSessions();
+      if (activeSessions && activeSessions.length > 0) {
+        multiSessionClient.sendCommand(activeSessions[0], { create: [x, y] });
+      }
+    } else {
+      sshxClient?.sendCommand({ create: [x, y] });
+    }
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
@@ -323,7 +386,16 @@
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
 
     // Send encrypted data through P2P client
-    await sshxClient?.sendData(id, encrypted);
+    if (useMultiSession) {
+      // For multi-session, we'd need to track which session this terminal belongs to
+      // For now, send to the first active session
+      const activeSessions = multiSessionClient?.getActiveSessions();
+      if (activeSessions && activeSessions.length > 0) {
+        await multiSessionClient.sendData(activeSessions[0], id, encrypted);
+      }
+    } else {
+      await sshxClient?.sendData(id, encrypted);
+    }
   }
 
   // Stupid hack to preserve input focus when terminals are reordered.
@@ -342,12 +414,26 @@
   onMount(() => {
     // 50 milliseconds between successive terminal move updates.
     const sendMove = throttle((message: any) => {
-      sshxClient?.sendCommand(message);
+      if (useMultiSession) {
+        const activeSessions = multiSessionClient?.getActiveSessions();
+        if (activeSessions && activeSessions.length > 0) {
+          multiSessionClient.sendCommand(activeSessions[0], message);
+        }
+      } else {
+        sshxClient?.sendCommand(message);
+      }
     }, 50);
 
     // 80 milliseconds between successive cursor updates.
     const sendCursor = throttle((message: any) => {
-      sshxClient?.sendCommand(message);
+      if (useMultiSession) {
+        const activeSessions = multiSessionClient?.getActiveSessions();
+        if (activeSessions && activeSessions.length > 0) {
+          multiSessionClient.sendCommand(activeSessions[0], message);
+        }
+      } else {
+        sshxClient?.sendCommand(message);
+      }
     }, 80);
 
     function handleMouse(event: MouseEvent) {
@@ -372,7 +458,14 @@
         );
         if (rows !== resizingSize.rows || cols !== resizingSize.cols) {
           resizingSize = { ...resizingSize, rows, cols };
-          sshxClient?.sendCommand({ move: [resizing, resizingSize] });
+          if (useMultiSession) {
+            const activeSessions = multiSessionClient?.getActiveSessions();
+            if (activeSessions && activeSessions.length > 0) {
+              multiSessionClient.sendCommand(activeSessions[0], { move: [resizing, resizingSize] });
+            }
+          } else {
+            sshxClient?.sendCommand({ move: [resizing, resizingSize] });
+          }
         }
       }
 
@@ -383,7 +476,14 @@
       if (moving !== -1) {
         movingIsDone = true;
         sendMove.cancel();
-        sshxClient?.sendCommand({ move: [moving, movingSize] });
+        if (useMultiSession) {
+          const activeSessions = multiSessionClient?.getActiveSessions();
+          if (activeSessions && activeSessions.length > 0) {
+            multiSessionClient.sendCommand(activeSessions[0], { move: [moving, movingSize] });
+          }
+        } else {
+          sshxClient?.sendCommand({ move: [moving, movingSize] });
+        }
       }
 
       if (resizing !== -1) {
@@ -392,7 +492,14 @@
 
       if (event.type === "mouseleave") {
         sendCursor.cancel();
-        sshxClient?.sendCommand({ setCursor: null });
+        if (useMultiSession) {
+          const activeSessions = multiSessionClient?.getActiveSessions();
+          if (activeSessions && activeSessions.length > 0) {
+            multiSessionClient.sendCommand(activeSessions[0], { setCursor: null });
+          }
+        } else {
+          sshxClient?.sendCommand({ setCursor: null });
+        }
       }
     }
 
@@ -411,7 +518,14 @@
 
   // Wait a small amount of time, since blur events happen before focus events.
   const setFocus = debounce((focused: number[]) => {
-    sshxClient?.sendCommand({ setFocus: focused[0] ?? null });
+    if (useMultiSession) {
+      const activeSessions = multiSessionClient?.getActiveSessions();
+      if (activeSessions && activeSessions.length > 0) {
+        multiSessionClient.sendCommand(activeSessions[0], { setFocus: focused[0] ?? null });
+      }
+    } else {
+      sshxClient?.sendCommand({ setFocus: focused[0] ?? null });
+    }
   }, 20);
 </script>
 
@@ -463,7 +577,16 @@
       <Chat
         {userId}
         messages={chatMessages}
-        on:chat={(event) => sshxClient?.sendCommand({ chat: event.detail })}
+        on:chat={(event) => {
+          if (useMultiSession) {
+            const activeSessions = multiSessionClient?.getActiveSessions();
+            if (activeSessions && activeSessions.length > 0) {
+              multiSessionClient.sendCommand(activeSessions[0], { chat: event.detail });
+            }
+          } else {
+            sshxClient?.sendCommand({ chat: event.detail });
+          }
+        }}
         on:close={() => (showChat = false)}
       />
     </div>
@@ -527,25 +650,55 @@
           bind:termEl={termElements[id]}
           on:data={({ detail: data }) =>
             hasWriteAccess && handleInput(id, data)}
-          on:close={() => sshxClient?.sendCommand({ close: id })}
+          on:close={() => {
+            if (useMultiSession) {
+              const activeSessions = multiSessionClient?.getActiveSessions();
+              if (activeSessions && activeSessions.length > 0) {
+                multiSessionClient.sendCommand(activeSessions[0], { close: id });
+              }
+            } else {
+              sshxClient?.sendCommand({ close: id });
+            }
+          }}
           on:shrink={() => {
             if (!hasWriteAccess) return;
             const rows = Math.max(ws.rows - 4, TERM_MIN_ROWS);
             const cols = Math.max(ws.cols - 10, TERM_MIN_COLS);
             if (rows !== ws.rows || cols !== ws.cols) {
-              sshxClient?.sendCommand({ move: [id, { ...ws, rows, cols }] });
+              if (useMultiSession) {
+                const activeSessions = multiSessionClient?.getActiveSessions();
+                if (activeSessions && activeSessions.length > 0) {
+                  multiSessionClient.sendCommand(activeSessions[0], { move: [id, { ...ws, rows, cols }] });
+                }
+              } else {
+                sshxClient?.sendCommand({ move: [id, { ...ws, rows, cols }] });
+              }
             }
           }}
           on:expand={() => {
             if (!hasWriteAccess) return;
             const rows = ws.rows + 4;
             const cols = ws.cols + 10;
-            sshxClient?.sendCommand({ move: [id, { ...ws, rows, cols }] });
+            if (useMultiSession) {
+              const activeSessions = multiSessionClient?.getActiveSessions();
+              if (activeSessions && activeSessions.length > 0) {
+                multiSessionClient.sendCommand(activeSessions[0], { move: [id, { ...ws, rows, cols }] });
+              }
+            } else {
+              sshxClient?.sendCommand({ move: [id, { ...ws, rows, cols }] });
+            }
           }}
           on:bringToFront={() => {
             if (!hasWriteAccess) return;
             showNetworkInfo = false;
-            sshxClient?.sendCommand({ move: [id, null] });
+            if (useMultiSession) {
+              const activeSessions = multiSessionClient?.getActiveSessions();
+              if (activeSessions && activeSessions.length > 0) {
+                multiSessionClient.sendCommand(activeSessions[0], { move: [id, null] });
+              }
+            } else {
+              sshxClient?.sendCommand({ move: [id, null] });
+            }
           }}
           on:startMove={({ detail: event }) => {
             if (!hasWriteAccess) return;
