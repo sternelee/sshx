@@ -16,6 +16,13 @@ anyhow.workspace = true
 argon2 = { version = "0.5.2", default-features = false, features = ["alloc"] }
 cfg-if = "1.0.0"
 clap.workspace = true
+data-encoding = "2.5.0"
+futures-lite = "2.3.0"
+iroh = "0.91.0"
+iroh-gossip = { version = "0.91.0", features = ["net"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.12.3"
 ctr = "0.9.2"
 encoding_rs = "0.8.31"
 pin-project = "1.1.3"

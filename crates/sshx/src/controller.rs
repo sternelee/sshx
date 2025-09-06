@@ -1,41 +1,87 @@
 //! Network gRPC client allowing server control of terminals.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::pin::pin;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use data_encoding::BASE32_NOPAD;
+use futures_lite::StreamExt;
+use iroh::net::{Endpoint, NodeAddr};
+use iroh::protocol::Router;
+use iroh::SecretKey;
+use iroh_gossip::{
+    net::{Event, Gossip, GossipEvent},
+    proto::TopicId,
+};
+use prost::Message;
+use serde::{Deserialize, Serialize};
 use sshx_core::proto::{
-    client_update::ClientMessage, server_update::ServerMessage,
-    sshx_service_client::SshxServiceClient, ClientUpdate, CloseRequest, NewShell, OpenRequest,
+    client_update::ClientMessage, server_update::ServerMessage, ClientUpdate, NewShell,
 };
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use tonic::transport::Channel;
 use tracing::{debug, error, warn};
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
 
-/// Interval for sending empty heartbeat messages to the server.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+/// A ticket that contains the necessary information to join a session.
+#[derive(Debug, Serialize, Deserialize)]
+struct Ticket {
+    /// The gossip topic to join.
+    topic: TopicId,
+    /// The node addresses of the host.
+    nodes: Vec<NodeAddr>,
+    /// The encryption key for the session.
+    key: String,
+}
 
-/// Interval to automatically reestablish connections.
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+impl Ticket {
+    /// Deserialize from a slice of bytes to a Ticket.
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).map_err(Into::into)
+    }
+
+    /// Serialize from a `Ticket` to a `Vec` of bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("serde_json::to_vec is infallible")
+    }
+}
+
+impl fmt::Display for Ticket {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut text = BASE32_NOPAD.encode(&self.to_bytes()[..]);
+        text.make_ascii_lowercase();
+        write!(f, "{}", text)
+    }
+}
+
+impl FromStr for Ticket {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = BASE32_NOPAD.decode(s.to_ascii_uppercase().as_bytes())?;
+        Self::from_bytes(&bytes)
+    }
+}
+
 
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
-    origin: String,
     runner: Runner,
     encrypt: Encrypt,
     encryption_key: String,
 
-    name: String,
-    token: String,
-    url: String,
-    write_url: Option<String>,
+    // Iroh related fields
+    endpoint: Endpoint,
+    gossip: Gossip,
+    topic: TopicId,
+
+    ticket: String,
+    write_ticket: Option<String>,
 
     /// Channels with backpressure routing messages to each shell task.
     shells_tx: HashMap<Sid, mpsc::Sender<ShellData>>,
@@ -48,12 +94,31 @@ pub struct Controller {
 impl Controller {
     /// Construct a new controller, connecting to the remote server.
     pub async fn new(
-        origin: &str,
-        name: &str,
+        _origin: &str,
+        _name: &str,
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self> {
-        debug!(%origin, "connecting to server");
+        debug!("creating new iroh endpoint");
+        let secret_key = SecretKey::generate();
+
+        // Create an endpoint.
+        let endpoint = Endpoint::builder()
+            .secret_key(secret_key)
+            .discovery_n0()
+            .bind()
+            .await?;
+
+        println!("> our node id: {}", endpoint.node_id());
+
+        let gossip = Gossip::builder().spawn(endpoint.clone()).await?;
+
+        let _router = Router::builder(endpoint.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
+
+        let topic = TopicId::from_bytes(&rand::random::<[u8; 32]>());
+
         let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
 
         let kdf_task = {
@@ -61,7 +126,7 @@ impl Controller {
             task::spawn_blocking(move || Encrypt::new(&encryption_key))
         };
 
-        let (write_password, kdf_write_password_task) = if enable_readers {
+        let (write_password, _kdf_write_password_task) = if enable_readers {
             let write_password = rand_alphanumeric(14); // 83.3 bits of entropy
             let task = {
                 let write_password = write_password.clone();
@@ -72,67 +137,52 @@ impl Controller {
             (None, None)
         };
 
-        let mut client = Self::connect(origin).await?;
+        let me = endpoint.node_addr().await?;
+        let ticket = Ticket {
+            topic,
+            nodes: vec![me],
+            key: encryption_key.clone(),
+        };
+        let ticket_str = ticket.to_string();
+
+        let write_ticket = if let Some(write_password) = write_password {
+            Some(format!("{},{}", ticket_str, write_password))
+        } else {
+            None
+        };
+
         let encrypt = kdf_task.await?;
-        let write_password_hash = if let Some(task) = kdf_write_password_task {
-            Some(task.await?.zeros().into())
-        } else {
-            None
-        };
-
-        let req = OpenRequest {
-            origin: origin.into(),
-            encrypted_zeros: encrypt.zeros().into(),
-            name: name.into(),
-            write_password_hash,
-        };
-        let mut resp = client.open(req).await?.into_inner();
-        resp.url = resp.url + "#" + &encryption_key;
-
-        let write_url = if let Some(write_password) = write_password {
-            Some(resp.url.clone() + "," + &write_password)
-        } else {
-            None
-        };
 
         let (output_tx, output_rx) = mpsc::channel(64);
         Ok(Self {
-            origin: origin.into(),
             runner,
             encrypt,
             encryption_key,
-            name: resp.name,
-            token: resp.token,
-            url: resp.url,
-            write_url,
+            endpoint,
+            gossip,
+            topic,
+            ticket: ticket_str,
+            write_ticket,
             shells_tx: HashMap::new(),
             output_tx,
             output_rx,
         })
     }
 
-    /// Create a new gRPC client to the HTTP(S) origin.
-    ///
-    /// This is used on reconnection to the server, since some replicas may be
-    /// gracefully shutting down, which means connected clients need to start a
-    /// new TCP handshake.
-    async fn connect(origin: &str) -> Result<SshxServiceClient<Channel>, tonic::transport::Error> {
-        SshxServiceClient::connect(String::from(origin)).await
-    }
-
     /// Returns the name of the session.
     pub fn name(&self) -> &str {
-        &self.name
+        // TODO: Is there a better name?
+        "iroh-session"
     }
 
-    /// Returns the URL of the session.
+    /// Returns the ticket of the session.
     pub fn url(&self) -> &str {
-        &self.url
+        &self.ticket
     }
 
-    /// Returns the write URL of the session, if it exists.
+    /// Returns the write ticket of the session, if it exists.
     pub fn write_url(&self) -> Option<&str> {
-        self.write_url.as_deref()
+        self.write_ticket.as_deref()
     }
 
     /// Returns the encryption key for this session, hidden from the server.
@@ -142,105 +192,90 @@ impl Controller {
 
     /// Run the controller forever, listening for requests from the server.
     pub async fn run(&mut self) -> ! {
-        let mut last_retry = Instant::now();
-        let mut retries = 0;
+        if let Err(err) = self.try_run().await {
+            error!(%err, "controller failed");
+        }
+        // Loop forever to keep the process alive.
         loop {
-            if let Err(err) = self.try_channel().await {
-                if last_retry.elapsed() >= Duration::from_secs(10) {
-                    retries = 0;
-                }
-                let secs = 2_u64.pow(retries.min(4));
-                error!(%err, "disconnected, retrying in {secs}s...");
-                time::sleep(Duration::from_secs(secs)).await;
-                retries += 1;
-            }
-            last_retry = Instant::now();
+            time::sleep(Duration::from_secs(3600)).await;
         }
     }
 
-    /// Helper function used by `run()` that can return errors.
-    async fn try_channel(&mut self) -> Result<()> {
-        let (tx, rx) = mpsc::channel(16);
+    async fn try_run(&mut self) -> Result<()> {
+        let (sender, mut receiver) = self
+            .gossip
+            .subscribe_and_join(self.topic, vec![])
+            .await?;
 
-        let hello = ClientMessage::Hello(format!("{},{}", self.name, self.token));
-        send_msg(&tx, hello).await?;
-
-        let mut client = Self::connect(&self.origin).await?;
-        let resp = client.channel(ReceiverStream::new(rx)).await?;
-        let mut messages = resp.into_inner(); // A stream of server messages.
-
-        let mut interval = time::interval(HEARTBEAT_INTERVAL);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut reconnect = pin!(time::sleep(RECONNECT_INTERVAL));
         loop {
-            let message = tokio::select! {
-                _ = interval.tick() => {
-                    tx.send(ClientUpdate::default()).await?;
-                    continue;
+            tokio::select! {
+                // 1. Handle outgoing messages from local shells
+                Some(msg) = self.output_rx.recv() => {
+                    let update = ClientUpdate {
+                        client_message: Some(msg),
+                    };
+                    let mut buf = Vec::new();
+                    update.encode(&mut buf)?;
+                    sender.broadcast(buf.into()).await?;
                 }
-                msg = self.output_rx.recv() => {
-                    let msg = msg.context("unreachable: output_tx was closed?")?;
-                    send_msg(&tx, msg).await?;
-                    continue;
-                }
-                item = messages.next() => {
-                    item.context("server closed connection")??
-                        .server_message
-                        .context("server message is missing")?
-                }
-                _ = &mut reconnect => {
-                    return Ok(()); // Reconnect to the server.
-                }
-            };
-
-            match message {
-                ServerMessage::Input(input) => {
-                    let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
-                    if let Some(sender) = self.shells_tx.get(&Sid(input.id)) {
-                        // This line applies backpressure if the shell task is overloaded.
-                        sender.send(ShellData::Data(data)).await.ok();
-                    } else {
-                        warn!(%input.id, "received data for non-existing shell");
-                    }
-                }
-                ServerMessage::CreateShell(new_shell) => {
-                    let id = Sid(new_shell.id);
-                    let center = (new_shell.x, new_shell.y);
-                    if !self.shells_tx.contains_key(&id) {
-                        self.spawn_shell_task(id, center);
-                    } else {
-                        warn!(%id, "server asked to create duplicate shell");
-                    }
-                }
-                ServerMessage::CloseShell(id) => {
-                    // Closes the channel when it is dropped, notifying the task to shut down.
-                    self.shells_tx.remove(&Sid(id));
-                    send_msg(&tx, ClientMessage::ClosedShell(id)).await?;
-                }
-                ServerMessage::Sync(seqnums) => {
-                    for (id, seq) in seqnums.map {
-                        if let Some(sender) = self.shells_tx.get(&Sid(id)) {
-                            sender.send(ShellData::Sync(seq)).await.ok();
-                        } else {
-                            warn!(%id, "received sequence number for non-existing shell");
-                            send_msg(&tx, ClientMessage::ClosedShell(id)).await?;
+                // 2. Handle incoming messages from the gossip topic
+                Ok(Some(event)) = receiver.try_next() => {
+                    if let Event::Gossip(GossipEvent::Received(msg)) = event {
+                        if let Ok(update) = ServerUpdate::decode(&msg.content[..]) {
+                            if let Some(server_message) = update.server_message {
+                                self.handle_server_message(server_message).await;
+                            }
                         }
                     }
                 }
-                ServerMessage::Resize(msg) => {
-                    if let Some(sender) = self.shells_tx.get(&Sid(msg.id)) {
-                        sender.send(ShellData::Size(msg.rows, msg.cols)).await.ok();
+            }
+        }
+    }
+
+    async fn handle_server_message(&mut self, message: ServerMessage) {
+        match message {
+            ServerMessage::Input(input) => {
+                let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
+                if let Some(sender) = self.shells_tx.get(&Sid(input.id)) {
+                    sender.send(ShellData::Data(data)).await.ok();
+                } else {
+                    warn!(%input.id, "received data for non-existing shell");
+                }
+            }
+            ServerMessage::CreateShell(new_shell) => {
+                let id = Sid(new_shell.id);
+                let center = (new_shell.x, new_shell.y);
+                if !self.shells_tx.contains_key(&id) {
+                    self.spawn_shell_task(id, center);
+                } else {
+                    warn!(%id, "server asked to create duplicate shell");
+                }
+            }
+            ServerMessage::CloseShell(id) => {
+                self.shells_tx.remove(&Sid(id));
+            }
+            ServerMessage::Sync(seqnums) => {
+                for (id, seq) in seqnums.map {
+                    if let Some(sender) = self.shells_tx.get(&Sid(id)) {
+                        sender.send(ShellData::Sync(seq)).await.ok();
                     } else {
-                        warn!(%msg.id, "received resize for non-existing shell");
+                        warn!(%id, "received sequence number for non-existing shell");
                     }
                 }
-                ServerMessage::Ping(ts) => {
-                    // Echo back the timestamp, for stateless latency measurement.
-                    send_msg(&tx, ClientMessage::Pong(ts)).await?;
+            }
+            ServerMessage::Resize(msg) => {
+                if let Some(sender) = self.shells_tx.get(&Sid(msg.id)) {
+                    sender.send(ShellData::Size(msg.rows, msg.cols)).await.ok();
+                } else {
+                    warn!(%msg.id, "received resize for non-existing shell");
                 }
-                ServerMessage::Error(err) => {
-                    error!(?err, "error received from server");
-                }
+            }
+            ServerMessage::Ping(ts) => {
+                let pong = ClientMessage::Pong(ts);
+                self.output_tx.send(pong).await.ok();
+            }
+            ServerMessage::Error(err) => {
+                error!(?err, "error received from peer");
             }
         }
     }
@@ -276,22 +311,7 @@ impl Controller {
     /// Terminate this session gracefully.
     pub async fn close(&self) -> Result<()> {
         debug!("closing session");
-        let req = CloseRequest {
-            name: self.name.clone(),
-            token: self.token.clone(),
-        };
-        let mut client = Self::connect(&self.origin).await?;
-        client.close(req).await?;
+        self.endpoint.shutdown().await?;
         Ok(())
     }
-}
-
-/// Attempt to send a client message over an update channel.
-async fn send_msg(tx: &mpsc::Sender<ClientUpdate>, message: ClientMessage) -> Result<()> {
-    let update = ClientUpdate {
-        client_message: Some(message),
-    };
-    tx.send(update)
-        .await
-        .context("failed to send message to server")
 }
