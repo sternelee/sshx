@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSHx App</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #ffffff;
+            overflow: hidden;
+        }
+        
+        .container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            background: #1a1a1a;
+            padding: 1rem;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: #00ff88;
+        }
+        
+        .header-controls {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .btn {
+            background: #00ff88;
+            color: #000;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover {
+            background: #00cc6a;
+            transform: translateY(-1px);
+        }
+        
+        .btn-secondary {
+            background: #333;
+            color: #fff;
+        }
+        
+        .btn-secondary:hover {
+            background: #444;
+        }
+        
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        
+        .sidebar {
+            width: 300px;
+            background: #1a1a1a;
+            border-right: 1px solid #333;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        
+        .session-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .session-item {
+            background: #2a2a2a;
+            padding: 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid #333;
+        }
+        
+        .session-item:hover {
+            background: #3a3a3a;
+            border-color: #00ff88;
+        }
+        
+        .session-item.active {
+            background: #3a3a3a;
+            border-color: #00ff88;
+        }
+        
+        .session-name {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        
+        .session-info {
+            font-size: 0.875rem;
+            color: #999;
+        }
+        
+        .terminal-area {
+            flex: 1;
+            background: #000;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .terminal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-content {
+            flex: 1;
+            background: #111;
+            border-radius: 4px;
+            padding: 1rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        
+        .terminal-input {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .terminal-input input {
+            flex: 1;
+            background: #222;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        
+        .status-bar {
+            background: #1a1a1a;
+            padding: 0.5rem 1rem;
+            border-top: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.875rem;
+            color: #999;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #1a1a1a;
+            padding: 2rem;
+            border-radius: 8px;
+            border: 1px solid #333;
+            min-width: 400px;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            color: #999;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #ccc;
+        }
+        
+        .form-group input, .form-group textarea {
+            width: 100%;
+            background: #222;
+            border: 1px solid #444;
+            color: #fff;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+        
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>SSHx App</h1>
+            <div class="header-controls">
+                <button class="btn" onclick="createNewSession()">New Session</button>
+                <button class="btn btn-secondary" onclick="joinSession()">Join Session</button>
+                <button class="btn btn-secondary" onclick="showSettings()">Settings</button>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="sidebar">
+                <h3>Active Sessions</h3>
+                <div class="session-list" id="sessionList">
+                    <!-- Sessions will be populated here -->
+                </div>
+            </div>
+            
+            <div class="terminal-area">
+                <div class="terminal-header">
+                    <h3>Terminal</h3>
+                    <div>
+                        <button class="btn btn-secondary" onclick="clearTerminal()">Clear</button>
+                        <button class="btn btn-secondary" onclick="copyOutput()">Copy</button>
+                    </div>
+                </div>
+                <div class="terminal-content" id="terminalContent">
+                    Welcome to SSHx App! Create a new session or join an existing one to get started.
+                </div>
+                <div class="terminal-input">
+                    <input type="text" id="terminalInput" placeholder="Enter command..." onkeypress="handleTerminalInput(event)">
+                    <button class="btn" onclick="sendCommand()">Send</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="status-bar">
+            <span id="statusText">Ready</span>
+            <span id="systemInfo"></span>
+        </div>
+    </div>
+    
+    <!-- New Session Modal -->
+    <div class="modal" id="newSessionModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Create New Session</h3>
+                <button class="modal-close" onclick="closeModal('newSessionModal')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label for="sessionName">Session Name</label>
+                <input type="text" id="sessionName" placeholder="My SSH Session">
+            </div>
+            <div class="form-group">
+                <label for="relayServer">Relay Server (optional)</label>
+                <input type="text" id="relayServer" placeholder="https://relay.example.com">
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="closeModal('newSessionModal')">Cancel</button>
+                <button class="btn" onclick="confirmCreateSession()">Create</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Join Session Modal -->
+    <div class="modal" id="joinSessionModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Join Session</h3>
+                <button class="modal-close" onclick="closeModal('joinSessionModal')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label for="sessionTicket">Session Ticket</label>
+                <textarea id="sessionTicket" placeholder="Paste the session ticket here..."></textarea>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="closeModal('joinSessionModal')">Cancel</button>
+                <button class="btn" onclick="confirmJoinSession()">Join</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let currentSession = null;
+        let sessions = [];
+        
+        // Initialize the application
+        async function init() {
+            try {
+                const systemInfo = await window.__TAURI__.invoke('get_system_info');
+                document.getElementById('systemInfo').textContent = 
+                    `${systemInfo.platform} (${systemInfo.arch}) v${systemInfo.version}`;
+                
+                // Load existing sessions
+                await loadSessions();
+                
+                updateStatus('Ready');
+            } catch (error) {
+                updateStatus('Error: ' + error);
+            }
+        }
+        
+        // Session management functions
+        async function createNewSession() {
+            document.getElementById('newSessionModal').style.display = 'block';
+        }
+        
+        async function confirmCreateSession() {
+            const name = document.getElementById('sessionName').value || 'New Session';
+            const relayServer = document.getElementById('relayServer').value;
+            
+            try {
+                const session = await window.__TAURI__.invoke('create_p2p_session');
+                session.name = name;
+                sessions.push(session);
+                
+                updateSessionList();
+                closeModal('newSessionModal');
+                updateStatus(`Created session: ${session.id}`);
+                
+                // Clear form
+                document.getElementById('sessionName').value = '';
+                document.getElementById('relayServer').value = '';
+            } catch (error) {
+                updateStatus('Error creating session: ' + error);
+            }
+        }
+        
+        async function joinSession() {
+            document.getElementById('joinSessionModal').style.display = 'block';
+        }
+        
+        async function confirmJoinSession() {
+            const ticket = document.getElementById('sessionTicket').value;
+            
+            if (!ticket) {
+                updateStatus('Please enter a session ticket');
+                return;
+            }
+            
+            try {
+                const session = await window.__TAURI__.invoke('join_p2p_session', { ticket });
+                sessions.push(session);
+                
+                updateSessionList();
+                closeModal('joinSessionModal');
+                updateStatus(`Joined session: ${session.id}`);
+                
+                // Clear form
+                document.getElementById('sessionTicket').value = '';
+            } catch (error) {
+                updateStatus('Error joining session: ' + error);
+            }
+        }
+        
+        async function loadSessions() {
+            try {
+                sessions = await window.__TAURI__.invoke('list_sessions');
+                updateSessionList();
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+            }
+        }
+        
+        function updateSessionList() {
+            const sessionList = document.getElementById('sessionList');
+            sessionList.innerHTML = '';
+            
+            sessions.forEach(session => {
+                const sessionItem = document.createElement('div');
+                sessionItem.className = `session-item ${session.id === currentSession?.id ? 'active' : ''}`;
+                sessionItem.onclick = () => selectSession(session);
+                
+                sessionItem.innerHTML = `
+                    <div class="session-name">${session.name}</div>
+                    <div class="session-info">
+                        ID: ${session.id.substring(0, 8)}...
+                        ${session.is_active ? '<span style="color: #00ff88;">● Active</span>' : '<span style="color: #ff4444;">● Inactive</span>'}
+                    </div>
+                `;
+                
+                sessionList.appendChild(sessionItem);
+            });
+        }
+        
+        function selectSession(session) {
+            currentSession = session;
+            updateSessionList();
+            updateStatus(`Selected session: ${session.name}`);
+            
+            // Update terminal content
+            const terminalContent = document.getElementById('terminalContent');
+            terminalContent.textContent = `Connected to session: ${session.name}\\nTicket: ${session.ticket}\\n\\nReady to receive commands...`;
+        }
+        
+        // Terminal functions
+        function handleTerminalInput(event) {
+            if (event.key === 'Enter') {
+                sendCommand();
+            }
+        }
+        
+        async function sendCommand() {
+            const input = document.getElementById('terminalInput');
+            const command = input.value.trim();
+            
+            if (!command) return;
+            
+            if (!currentSession) {
+                updateStatus('Please select a session first');
+                return;
+            }
+            
+            try {
+                await window.__TAURI__.invoke('send_session_message', {
+                    sessionId: currentSession.id,
+                    message: command
+                });
+                
+                // Add command to terminal
+                const terminalContent = document.getElementById('terminalContent');
+                terminalContent.textContent += `\\n$ ${command}`;
+                input.value = '';
+                
+                // Simulate command output (this would come from the actual terminal)
+                setTimeout(() => {
+                    terminalContent.textContent += `\\nCommand executed: ${command}`;
+                    terminalContent.scrollTop = terminalContent.scrollHeight;
+                }, 500);
+                
+            } catch (error) {
+                updateStatus('Error sending command: ' + error);
+            }
+        }
+        
+        function clearTerminal() {
+            document.getElementById('terminalContent').textContent = '';
+        }
+        
+        function copyOutput() {
+            const terminalContent = document.getElementById('terminalContent');
+            navigator.clipboard.writeText(terminalContent.textContent).then(() => {
+                updateStatus('Terminal output copied to clipboard');
+            }).catch(() => {
+                updateStatus('Failed to copy terminal output');
+            });
+        }
+        
+        // Utility functions
+        function updateStatus(message) {
+            document.getElementById('statusText').textContent = message;
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+        
+        function showSettings() {
+            updateStatus('Settings dialog not implemented yet');
+        }
+        
+        // Initialize when the page loads
+        window.addEventListener('DOMContentLoaded', init);
+        
+        // Close modals when clicking outside
+        window.addEventListener('click', (event) => {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "productName": "SSHx App",
+  "version": "0.4.1",
+  "identifier": "io.sshx.app",
+  "build": {
+    "frontendDist": "../../crates/sshx-app/index.html"
+  },
+  "bundle": {
+    "icon": []
+  }
+}
