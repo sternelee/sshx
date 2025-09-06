@@ -2,8 +2,7 @@
 
 use anyhow::Result;
 use encoding_rs::{CoderResult, UTF_8};
-use sshx_core::proto::{client_update::ClientMessage, TerminalData};
-use sshx_core::Sid;
+use sshx_core::{ClientMessage, TerminalData, Sid};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
@@ -120,7 +119,7 @@ async fn shell_task(
                 &content.as_bytes()[start..end],
             );
             let data = TerminalData {
-                id: id.0,
+                id,
                 data: data.into(),
                 seq: (content_offset + start) as u64,
             };
@@ -159,7 +158,7 @@ async fn echo_task(
             ShellData::Data(data) => {
                 let msg = String::from_utf8_lossy(&data);
                 let term_data = TerminalData {
-                    id: id.0,
+                    id,
                     data: encrypt
                         .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())
                         .into(),

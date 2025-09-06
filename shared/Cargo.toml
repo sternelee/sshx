@@ -10,10 +10,13 @@ keywords.workspace = true
 edition = "2021"
 
 [dependencies]
-prost.workspace = true
+aes.workspace = true
+anyhow.workspace = true
+argon2.workspace = true
+ctr.workspace = true
+data-encoding.workspace = true
+iroh.workspace = true
+iroh-gossip.workspace = true
 rand.workspace = true
 serde.workspace = true
-tonic.workspace = true
-
-[build-dependencies]
-tonic-build.workspace = true
+serde_json.workspace = true

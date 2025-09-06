@@ -16,8 +16,7 @@ use iroh_gossip::{
 };
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sshx_core::proto::{client_update::ClientMessage, server_update::ServerMessage, NewShell};
-use sshx_core::{rand_alphanumeric, Sid};
+use sshx_core::{ClientMessage, ServerMessage, NewShell, rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration};
@@ -274,14 +273,14 @@ impl Controller {
         match message {
             ServerMessage::Input(input) => {
                 let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
-                if let Some(sender) = self.shells_tx.get(&Sid(input.id)) {
+                if let Some(sender) = self.shells_tx.get(&input.id) {
                     sender.send(ShellData::Data(data)).await.ok();
                 } else {
                     warn!(%input.id, "received data for non-existing shell");
                 }
             }
             ServerMessage::CreateShell(new_shell) => {
-                let id = Sid(new_shell.id);
+                let id = new_shell.id;
                 let center = (new_shell.x, new_shell.y);
                 if !self.shells_tx.contains_key(&id) {
                     self.spawn_shell_task(id, center);
@@ -289,12 +288,12 @@ impl Controller {
                     warn!(%id, "server asked to create duplicate shell");
                 }
             }
-            ServerMessage::CloseShell(id) => {
-                self.shells_tx.remove(&Sid(id));
+            ServerMessage::CloseShell { id } => {
+                self.shells_tx.remove(&id);
             }
             ServerMessage::Sync(seqnums) => {
                 for (id, seq) in seqnums.map {
-                    if let Some(sender) = self.shells_tx.get(&Sid(id)) {
+                    if let Some(sender) = self.shells_tx.get(&id) {
                         sender.send(ShellData::Sync(seq)).await.ok();
                     } else {
                         warn!(%id, "received sequence number for non-existing shell");
@@ -302,18 +301,18 @@ impl Controller {
                 }
             }
             ServerMessage::Resize(msg) => {
-                if let Some(sender) = self.shells_tx.get(&Sid(msg.id)) {
+                if let Some(sender) = self.shells_tx.get(&msg.id) {
                     sender.send(ShellData::Size(msg.rows, msg.cols)).await.ok();
                 } else {
                     warn!(%msg.id, "received resize for non-existing shell");
                 }
             }
-            ServerMessage::Ping(ts) => {
-                let pong = ClientMessage::Pong(ts);
+            ServerMessage::Ping { timestamp } => {
+                let pong = ClientMessage::Pong { timestamp };
                 self.output_tx.send(pong).await.ok();
             }
-            ServerMessage::Error(err) => {
-                error!(?err, "error received from peer");
+            ServerMessage::Error { message } => {
+                error!(?message, "error received from peer");
             }
         }
     }
@@ -330,7 +329,7 @@ impl Controller {
         tokio::spawn(async move {
             debug!(%id, "spawning new shell");
             let new_shell = NewShell {
-                id: id.0,
+                id,
                 x: center.0,
                 y: center.1,
             };
@@ -339,10 +338,10 @@ impl Controller {
                 return;
             }
             if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
-                let err = ClientMessage::Error(err.to_string());
+                let err = ClientMessage::Error { message: err.to_string() };
                 output_tx.send(err).await.ok();
             }
-            output_tx.send(ClientMessage::ClosedShell(id.0)).await.ok();
+            output_tx.send(ClientMessage::ClosedShell { id }).await.ok();
         });
     }
 

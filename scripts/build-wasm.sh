@@ -4,14 +4,14 @@
 echo "Building sshx-web WASM package..."
 
 # Change to the sshx-web directory
-cd crates/sshx-web
+cd browser
 
 # Build the package
-wasm-pack build --target web --out-dir ../../static/sshx-web-pkg --dev
+wasm-pack build --target web --out-dir ../static/sshx-web-pkg --dev
 
 # Copy the types file if needed
-if [ -f "../../static/sshx-web-pkg/sshx_web.d.ts" ]; then
-  cp "../../static/sshx-web-pkg/sshx_web.d.ts" "../../static/sshx-web-pkg/sshx-web-pkg.d.ts"
+if [ -f "../static/sshx-web-pkg/sshx_web.d.ts" ]; then
+  cp "../static/sshx-web-pkg/sshx_web.d.ts" "../static/sshx-web-pkg/sshx-web-pkg.d.ts"
 fi
 
 echo "WASM package built successfully!"
