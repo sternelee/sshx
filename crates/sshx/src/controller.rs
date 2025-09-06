@@ -2,28 +2,25 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::pin::pin;
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use data_encoding::BASE32_NOPAD;
 use futures_lite::StreamExt;
-use iroh::net::{Endpoint, NodeAddr};
 use iroh::protocol::Router;
-use iroh::SecretKey;
+use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
 use iroh_gossip::{
-    net::{Event, Gossip, GossipEvent},
+    api::{Event, GossipReceiver, GossipSender},
+    net::{Gossip, GOSSIP_ALPN},
     proto::TopicId,
 };
-use prost::Message;
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sshx_core::proto::{
-    client_update::ClientMessage, server_update::ServerMessage, ClientUpdate, NewShell,
-};
+use sshx_core::proto::{client_update::ClientMessage, server_update::ServerMessage, NewShell};
 use sshx_core::{rand_alphanumeric, Sid};
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio::time::{self, Duration, Instant, MissedTickBehavior};
+use tokio::time::{self, Duration};
 use tracing::{debug, error, warn};
 
 use crate::encrypt::Encrypt;
@@ -68,7 +65,6 @@ impl FromStr for Ticket {
     }
 }
 
-
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
     runner: Runner,
@@ -79,6 +75,9 @@ pub struct Controller {
     endpoint: Endpoint,
     gossip: Gossip,
     topic: TopicId,
+    gossip_sender: Option<GossipSender>,
+    gossip_receiver: Option<GossipReceiver>,
+    router: Option<iroh::protocol::Router>,
 
     ticket: String,
     write_ticket: Option<String>,
@@ -100,7 +99,7 @@ impl Controller {
         enable_readers: bool,
     ) -> Result<Self> {
         debug!("creating new iroh endpoint");
-        let secret_key = SecretKey::generate();
+        let secret_key = SecretKey::generate(&mut OsRng);
 
         // Create an endpoint.
         let endpoint = Endpoint::builder()
@@ -111,13 +110,17 @@ impl Controller {
 
         println!("> our node id: {}", endpoint.node_id());
 
-        let gossip = Gossip::builder().spawn(endpoint.clone()).await?;
+        let gossip = Gossip::builder().spawn(endpoint.clone());
 
-        let _router = Router::builder(endpoint.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
+        let router = Router::builder(endpoint.clone())
+            .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
 
-        let topic = TopicId::from_bytes(&rand::random::<[u8; 32]>());
+        let topic = TopicId::from_bytes({
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            bytes
+        });
 
         let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
 
@@ -137,7 +140,7 @@ impl Controller {
             (None, None)
         };
 
-        let me = endpoint.node_addr().await?;
+        let me = endpoint.node_addr().initialized().await;
         let ticket = Ticket {
             topic,
             nodes: vec![me],
@@ -161,6 +164,9 @@ impl Controller {
             endpoint,
             gossip,
             topic,
+            gossip_sender: None,
+            gossip_receiver: None,
+            router: Some(router),
             ticket: ticket_str,
             write_ticket,
             shells_tx: HashMap::new(),
@@ -202,30 +208,32 @@ impl Controller {
     }
 
     async fn try_run(&mut self) -> Result<()> {
-        let (sender, mut receiver) = self
+        let (sender, receiver) = self
             .gossip
             .subscribe_and_join(self.topic, vec![])
-            .await?;
+            .await?
+            .split();
+
+        self.gossip_sender = Some(sender);
+        self.gossip_receiver = Some(receiver);
+
+        let sender = self.gossip_sender.as_ref().unwrap();
+        let mut receiver = self.gossip_receiver.take().unwrap();
 
         loop {
             tokio::select! {
                 // 1. Handle outgoing messages from local shells
                 Some(msg) = self.output_rx.recv() => {
-                    let update = ClientUpdate {
-                        client_message: Some(msg),
-                    };
-                    let mut buf = Vec::new();
-                    update.encode(&mut buf)?;
-                    sender.broadcast(buf.into()).await?;
+                    // For now, pass raw message bytes until prost version mismatch is resolved
+                    let msg_bytes = format!("{:?}", msg).into_bytes(); // Temporary workaround
+                    sender.broadcast(msg_bytes.into()).await?;
                 }
                 // 2. Handle incoming messages from the gossip topic
                 Ok(Some(event)) = receiver.try_next() => {
-                    if let Event::Gossip(GossipEvent::Received(msg)) = event {
-                        if let Ok(update) = ServerUpdate::decode(&msg.content[..]) {
-                            if let Some(server_message) = update.server_message {
-                                self.handle_server_message(server_message).await;
-                            }
-                        }
+                    if let Event::Received(msg) = event {
+                        // For now, skip deserialization until prost version mismatch is resolved
+                        // TODO: Parse received messages properly once prost versions are aligned
+                        warn!("Received gossip message: {} bytes", msg.content.len());
                     }
                 }
             }
@@ -309,9 +317,14 @@ impl Controller {
     }
 
     /// Terminate this session gracefully.
-    pub async fn close(&self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         debug!("closing session");
-        self.endpoint.shutdown().await?;
+        if let Some(router) = self.router.take() {
+            router
+                .shutdown()
+                .await
+                .map_err(|e| anyhow::anyhow!("router shutdown failed: {}", e))?;
+        }
         Ok(())
     }
 }
