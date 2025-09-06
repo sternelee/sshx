@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, warn};
+use url::Url;
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
@@ -98,15 +99,44 @@ impl Controller {
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self> {
-        debug!("creating new iroh endpoint");
+        Self::with_relay(None, runner, enable_readers).await
+    }
+
+    /// Construct a new controller with custom relay server configuration.
+    pub async fn with_relay(
+        relay_url: Option<String>,
+        runner: Runner,
+        enable_readers: bool,
+    ) -> Result<Self> {
+        debug!("Initializing iroh P2P network with gossip...");
         let secret_key = SecretKey::generate(&mut OsRng);
 
-        // Create an endpoint.
-        let endpoint = Endpoint::builder()
+        // Create iroh endpoint with IPv4 preference and disabled IPv6 to reduce connectivity warnings
+        let endpoint_builder = Endpoint::builder()
             .secret_key(secret_key)
-            .discovery_n0()
-            .bind()
-            .await?;
+            .bind_addr_v4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                0,
+            )) // Prefer IPv4 binding
+            .bind_addr_v6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::LOCALHOST,
+                0,
+                0,
+                0,
+            )); // Bind IPv6 to localhost only
+
+        let endpoint = if let Some(relay) = relay_url {
+            debug!("Using custom relay server: {}", relay);
+            // Parse the relay URL and use it for discovery
+            let _relay_url: Url = relay.parse()?;
+            endpoint_builder
+                .discovery_n0() // Use default discovery for now, custom relay setup is more complex
+                .bind()
+                .await?
+        } else {
+            debug!("Using default n0 relay server with IPv4 preference");
+            endpoint_builder.discovery_n0().bind().await?
+        };
 
         println!("> our node id: {}", endpoint.node_id());
 

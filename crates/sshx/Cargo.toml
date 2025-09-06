@@ -34,6 +34,7 @@ tokio-stream.workspace = true
 tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url = "2.5"
 whoami = { version = "1.5.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
