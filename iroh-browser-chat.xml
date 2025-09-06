@@ -1,0 +1,3641 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+browser-wasm/
+  .cargo/
+    config.toml
+  src/
+    lib.rs
+  .gitignore
+  Cargo.toml
+cli/
+  src/
+    main.rs
+  .gitignore
+  Cargo.toml
+frontend/
+  src/
+    components/
+      ui/
+        adaptive-dialog.tsx
+        alert-dialog.tsx
+        button.tsx
+        checkbox.tsx
+        dialog.tsx
+        drawer.tsx
+        input.tsx
+        popover.tsx
+        scroll-area.tsx
+        toggle.tsx
+      change-nickname-button.tsx
+      chatview.tsx
+      header.tsx
+      homescreen.tsx
+      invitepopup.tsx
+      leave-channel-button.tsx
+      logview.tsx
+      sidebar.tsx
+    hooks/
+      use-media-query.ts
+    lib/
+      api.ts
+      iroh.ts
+      log.ts
+      utils.ts
+    app.css
+    app.tsx
+    main.tsx
+  .gitignore
+  components.json
+  index.html
+  package.json
+  postcss.config.mjs
+  tailwind.config.js
+  tsconfig.app.json
+  tsconfig.json
+  tsconfig.node.json
+  vite.config.ts
+shared/
+  src/
+    lib.rs
+  .gitignore
+  Cargo.toml
+Cargo.toml
+Makefile.toml
+README.md
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="browser-wasm/.cargo/config.toml">
+# we specify the profile here, because it is the only way to define
+# different settings for a single crate in a workspace.
+[profile.release]
+codegen-units = 1
+strip = "symbols"
+debug = false
+lto = true
+opt-level = "z"
+panic = 'abort'
+
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+</file>
+
+<file path="browser-wasm/src/lib.rs">
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
+
+use anyhow::Result;
+use chat_shared::{ChatSender, ChatTicket, NodeId, TopicId};
+use n0_future::{time::Duration, StreamExt};
+use serde::{Deserialize, Serialize};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber_wasm::MakeConsoleWriter;
+use wasm_bindgen::{prelude::wasm_bindgen, JsError, JsValue};
+use wasm_streams::ReadableStream;
+
+#[wasm_bindgen(start)]
+fn start() {
+    console_error_panic_hook::set_once();
+
+    tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::DEBUG)
+        .with_writer(
+            // To avoide trace events in the browser from showing their JS backtrace
+            MakeConsoleWriter::default().map_trace_level_to(tracing::Level::DEBUG),
+        )
+        // If we don't do this in the browser, we get a runtime error.
+        .without_time()
+        .with_ansi(false)
+        .init();
+
+    tracing::info!("(testing logging) Logging setup");
+}
+
+/// Node for chatting over iroh-gossip
+#[wasm_bindgen]
+pub struct ChatNode(chat_shared::ChatNode);
+
+#[wasm_bindgen]
+impl ChatNode {
+    /// Spawns a gossip node.
+    pub async fn spawn() -> Result<Self, JsError> {
+        let inner = chat_shared::ChatNode::spawn(None)
+            .await
+            .map_err(to_js_err)?;
+        Ok(Self(inner))
+    }
+
+    /// Returns the node id of this node.
+    pub fn node_id(&self) -> String {
+        self.0.node_id().to_string()
+    }
+
+    /// Returns information about all the remote nodes this [`Endpoint`] knows about.
+    pub fn remote_info(&self) -> Vec<JsValue> {
+        self.0
+            .remote_info()
+            .into_iter()
+            .map(|value| serde_wasm_bindgen::to_value(&value).unwrap())
+            .collect()
+    }
+
+    /// Opens a chat.
+    pub async fn create(&self, nickname: String) -> Result<Channel, JsError> {
+        // let ticket = ChatTicket::new(topic);
+        let ticket = ChatTicket::new_random();
+        self.join_inner(ticket, nickname).await
+    }
+
+    /// Joins a chat.
+    pub async fn join(&self, ticket: String, nickname: String) -> Result<Channel, JsError> {
+        let ticket = ChatTicket::deserialize(&ticket).map_err(to_js_err)?;
+        self.join_inner(ticket, nickname).await
+    }
+
+    async fn join_inner(&self, ticket: ChatTicket, nickname: String) -> Result<Channel, JsError> {
+        let (sender, receiver) = self.0.join(&ticket, nickname).await.map_err(to_js_err)?;
+        let sender = ChannelSender(sender);
+        let neighbors = Arc::new(Mutex::new(BTreeSet::new()));
+        let neighbors2 = neighbors.clone();
+        let receiver = receiver.map(move |event| {
+            if let Ok(event) = &event {
+                match event {
+                    chat_shared::Event::Joined { neighbors } => {
+                        neighbors2.lock().unwrap().extend(neighbors.iter().cloned());
+                    }
+                    chat_shared::Event::NeighborUp { node_id } => {
+                        neighbors2.lock().unwrap().insert(*node_id);
+                    }
+                    chat_shared::Event::NeighborDown { node_id } => {
+                        neighbors2.lock().unwrap().remove(node_id);
+                    }
+                    _ => {}
+                }
+            }
+            event
+                .map_err(|err| JsValue::from(&err.to_string()))
+                .map(|event| serde_wasm_bindgen::to_value(&event).unwrap())
+        });
+        let receiver = ReadableStream::from_stream(receiver).into_raw();
+
+        // Add ourselves to the ticket.
+        let mut ticket = ticket;
+        ticket.bootstrap.insert(self.0.node_id());
+        // ticket.bootstrap = [self.0.node_id()].into_iter().collect();
+
+        let topic = Channel {
+            topic_id: ticket.topic_id,
+            bootstrap: ticket.bootstrap,
+            neighbors,
+            me: self.0.node_id(),
+            sender,
+            receiver,
+        };
+        Ok(topic)
+    }
+}
+
+type ChannelReceiver = wasm_streams::readable::sys::ReadableStream;
+
+#[wasm_bindgen]
+pub struct Channel {
+    topic_id: TopicId,
+    me: NodeId,
+    bootstrap: BTreeSet<NodeId>,
+    neighbors: Arc<Mutex<BTreeSet<NodeId>>>,
+    sender: ChannelSender,
+    receiver: ChannelReceiver,
+}
+
+#[wasm_bindgen]
+impl Channel {
+    #[wasm_bindgen(getter)]
+    pub fn sender(&self) -> ChannelSender {
+        self.sender.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn receiver(&mut self) -> ChannelReceiver {
+        self.receiver.clone()
+    }
+
+    pub fn ticket(&self, opts: JsValue) -> Result<String, JsError> {
+        let opts: TicketOpts = serde_wasm_bindgen::from_value(opts)?;
+        let mut ticket = ChatTicket::new(self.topic_id);
+        if opts.include_myself {
+            ticket.bootstrap.insert(self.me);
+        }
+        if opts.include_bootstrap {
+            ticket.bootstrap.extend(self.bootstrap.iter().copied());
+        }
+        if opts.include_neighbors {
+            let neighbors = self.neighbors.lock().unwrap();
+            ticket.bootstrap.extend(neighbors.iter().copied())
+        }
+        tracing::info!("opts {:?} ticket {:?}", opts, ticket);
+        Ok(ticket.serialize())
+    }
+
+    pub fn id(&self) -> String {
+        self.topic_id.to_string()
+    }
+
+    pub fn neighbors(&self) -> Vec<String> {
+        self.neighbors
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|x| x.to_string())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub node_id: NodeId,
+    pub nickname: String,
+    pub last_active: Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketOpts {
+    pub include_myself: bool,
+    pub include_bootstrap: bool,
+    pub include_neighbors: bool,
+}
+
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct ChannelSender(ChatSender);
+
+#[wasm_bindgen]
+impl ChannelSender {
+    pub async fn broadcast(&self, text: String) -> Result<(), JsError> {
+        self.0.send(text).await.map_err(to_js_err)?;
+        Ok(())
+    }
+
+    pub fn set_nickame(&self, nickname: String) {
+        self.0.set_nickname(nickname);
+    }
+}
+
+fn to_js_err(err: impl Into<anyhow::Error>) -> JsError {
+    let err: anyhow::Error = err.into();
+    JsError::new(&err.to_string())
+}
+</file>
+
+<file path="browser-wasm/.gitignore">
+/pkg
+</file>
+
+<file path="browser-wasm/Cargo.toml">
+[package]
+name = "chat-browser"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.86"
+chat-shared = { version = "0.1.0", path = "../shared" }
+console_error_panic_hook = "0.1.7"
+getrandom = { version = "0.2", features = ["js"] }
+n0-future = "0.1.2"
+serde = "1.0.217"
+serde-wasm-bindgen = "0.6.5"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber-wasm = "0.1.0"
+wasm-bindgen = "=0.2.100"
+wasm-bindgen-futures = "0.4"
+wasm-streams = "0.4.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-nontrapping-float-to-int", "--enable-bulk-memory"]
+</file>
+
+<file path="cli/src/main.rs">
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+use chat_shared::{ChatNode, ChatTicket, Event};
+use clap::Parser;
+use iroh::SecretKey;
+use n0_future::StreamExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(subcommand)]
+    command: Command,
+    /// Set your name for this chat session
+    #[clap(short, long)]
+    nickname: String,
+}
+
+#[derive(Parser, Debug)]
+pub enum Command {
+    /// Create a new chat channel
+    Create,
+    /// Join a chat channel
+    Join {
+        /// Ticket for the channel
+        ticket: String,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+    let args = Args::parse();
+
+    let secret_key = match std::env::var("IROH_SECRET") {
+        Err(_) => {
+            let secret_key = SecretKey::generate(rand::rngs::OsRng);
+            println!("* using new secret. to reuse, set this environment variable:");
+            println!(
+                "IROH_SECRET={}",
+                data_encoding::HEXLOWER.encode(&secret_key.to_bytes())
+            );
+            secret_key
+        }
+        Ok(s) => s
+            .parse()
+            .context("failed to parse secret key from IROH_SECRET environment variable")?,
+    };
+
+    let node = ChatNode::spawn(Some(secret_key)).await?;
+    println!("node id: {}", node.node_id());
+
+    let ticket = match args.command {
+        Command::Create => ChatTicket::new_random(),
+        Command::Join { ticket } => ChatTicket::deserialize(&ticket)?,
+    };
+
+    let mut our_ticket = ticket.clone();
+    our_ticket.bootstrap = [node.node_id()].into_iter().collect();
+    println!("* ticket to join this chat:");
+    println!("{}", our_ticket.serialize());
+
+    println!("* waiting for peers ...");
+    let (sender, mut receiver) = node.join(&ticket, args.nickname).await?;
+
+    let receive = tokio::task::spawn(async move {
+        let mut names = HashMap::new();
+        while let Some(event) = receiver.try_next().await? {
+            match event {
+                Event::Joined { neighbors } => {
+                    println!("* swarm joined");
+                    for node_id in neighbors {
+                        println!("* neighbor up: {node_id}")
+                    }
+                }
+                Event::Presence {
+                    from,
+                    nickname,
+                    sent_timestamp: _,
+                } => {
+                    let from_short = from.fmt_short();
+                    if !nickname.is_empty() {
+                        let old_name = names.get(&from);
+                        if old_name != Some(&nickname) {
+                            println!("* {from_short} is now known as {nickname}")
+                        }
+                    }
+                    names.insert(from, nickname.clone());
+                }
+                Event::MessageReceived {
+                    from,
+                    text,
+                    nickname,
+                    sent_timestamp: _,
+                } => {
+                    let from_short = from.fmt_short();
+                    if !nickname.is_empty() {
+                        let old_name = names.get(&from);
+                        if old_name != Some(&nickname) {
+                            println!("* {from_short} is now known as {nickname}")
+                        }
+                    }
+                    println!("<{from_short}> {nickname}: {text}");
+                }
+                Event::NeighborUp { node_id } => {
+                    println!("* neighbor up: {node_id}")
+                }
+                Event::NeighborDown { node_id } => {
+                    println!("* neighbor down: {node_id}")
+                }
+                Event::Lagged => {
+                    println!("* warn: gossip stream lagged")
+                }
+            }
+        }
+        println!("* closed");
+        anyhow::Ok(())
+    });
+
+    let send = tokio::task::spawn(async move {
+        let mut input = BufReader::new(tokio::io::stdin()).lines();
+        while let Some(line) = input.next_line().await? {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            println!("* sending message: {line}");
+            sender.send(line.to_string()).await?;
+        }
+        anyhow::Ok(())
+    });
+
+    // TODO: Clean shutown.
+    receive.await??;
+    send.await??;
+    Ok(())
+}
+</file>
+
+<file path="cli/.gitignore">
+/target
+</file>
+
+<file path="cli/Cargo.toml">
+[package]
+name = "chat-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.29", features = ["derive"] }
+iroh = { workspace = true, default-features = false }
+n0-future = "0.1.2"
+rand = "0.8"
+chat-shared = { version = "0.1.0", path = "../shared" }
+tokio = { version = "1.43.0", features = ["rt", "macros"] }
+tracing-subscriber = "0.3.19"
+data-encoding = "2.9"
+</file>
+
+<file path="frontend/src/components/ui/adaptive-dialog.tsx">
+"use client"
+
+import * as React from "react"
+import { useIsDesktop } from "@/hooks/use-media-query"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/components/ui/drawer"
+
+const AdaptiveDialogContext = React.createContext<{
+  isDesktop: boolean
+}>({ isDesktop: true })
+
+export function AdaptiveDialog({ children, ...props }: React.ComponentProps<typeof Dialog>) {
+  const isDesktop = useIsDesktop()
+
+  if (isDesktop) {
+    return (
+      <AdaptiveDialogContext.Provider value={{ isDesktop }}>
+        <Dialog modal={true} {...props}>{children}</Dialog>
+      </AdaptiveDialogContext.Provider>
+    )
+  }
+
+  return (
+    <AdaptiveDialogContext.Provider value={{ isDesktop }}>
+      <Drawer {...props}>{children}</Drawer>
+    </AdaptiveDialogContext.Provider>
+  )
+}
+
+export function AdaptiveDialogTrigger({ children }: { children: React.ReactNode }) {
+  const { isDesktop } = React.useContext(AdaptiveDialogContext)
+
+  if (isDesktop) {
+    return <DialogTrigger asChild>{children}</DialogTrigger>
+  }
+
+  return <DrawerTrigger asChild>{children}</DrawerTrigger>
+}
+
+export function AdaptiveDialogContent({ children, ...props }: React.ComponentProps<typeof DialogContent>) {
+  const { isDesktop } = React.useContext(AdaptiveDialogContext)
+
+  if (isDesktop) {
+    return <DialogContent {...props}>{children}</DialogContent>
+  }
+
+  return (
+    <DrawerContent {...props}>
+      {children}
+      <DrawerFooter className="pt-2">
+        <DrawerClose asChild>
+          <button className="btn btn-outline">Cancel</button>
+        </DrawerClose>
+      </DrawerFooter>
+    </DrawerContent>
+  )
+}
+
+export function AdaptiveDialogHeader({ children, ...props }: React.ComponentProps<typeof DialogHeader>) {
+  const { isDesktop } = React.useContext(AdaptiveDialogContext)
+
+  if (isDesktop) {
+    return <DialogHeader {...props}>{children}</DialogHeader>
+  }
+
+  return <DrawerHeader {...props}>{children}</DrawerHeader>
+}
+
+export function AdaptiveDialogTitle({ children, ...props }: React.ComponentProps<typeof DialogTitle>) {
+  const { isDesktop } = React.useContext(AdaptiveDialogContext)
+
+  if (isDesktop) {
+    return <DialogTitle {...props}>{children}</DialogTitle>
+  }
+
+  return <DrawerTitle {...props}>{children}</DrawerTitle>
+}
+
+export function AdaptiveDialogDescription({ children, ...props }: React.ComponentProps<typeof DialogDescription>) {
+  const { isDesktop } = React.useContext(AdaptiveDialogContext)
+
+  if (isDesktop) {
+    return <DialogDescription {...props}>{children}</DialogDescription>
+  }
+
+  return <DrawerDescription {...props}>{children}</DrawerDescription>
+}
+</file>
+
+<file path="frontend/src/components/ui/alert-dialog.tsx">
+import * as React from "react"
+import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
+
+import { cn } from "@/lib/utils"
+import { buttonVariants } from "@/components/ui/button"
+
+const AlertDialog = AlertDialogPrimitive.Root
+
+const AlertDialogTrigger = AlertDialogPrimitive.Trigger
+
+const AlertDialogPortal = AlertDialogPrimitive.Portal
+
+const AlertDialogOverlay = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Overlay
+    className={cn(
+      "fixed inset-0 z-50 bg-black/80  data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      className
+    )}
+    {...props}
+    ref={ref}
+  />
+))
+AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName
+
+const AlertDialogContent = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPortal>
+    <AlertDialogOverlay />
+    <AlertDialogPrimitive.Content
+      ref={ref}
+      className={cn(
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        className
+      )}
+      {...props}
+    />
+  </AlertDialogPortal>
+))
+AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName
+
+const AlertDialogHeader = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col space-y-2 text-center sm:text-left",
+      className
+    )}
+    {...props}
+  />
+)
+AlertDialogHeader.displayName = "AlertDialogHeader"
+
+const AlertDialogFooter = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
+      className
+    )}
+    {...props}
+  />
+)
+AlertDialogFooter.displayName = "AlertDialogFooter"
+
+const AlertDialogTitle = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Title>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Title>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Title
+    ref={ref}
+    className={cn("text-lg font-semibold", className)}
+    {...props}
+  />
+))
+AlertDialogTitle.displayName = AlertDialogPrimitive.Title.displayName
+
+const AlertDialogDescription = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Description>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Description>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Description
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+AlertDialogDescription.displayName =
+  AlertDialogPrimitive.Description.displayName
+
+const AlertDialogAction = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Action>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Action>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Action
+    ref={ref}
+    className={cn(buttonVariants(), className)}
+    {...props}
+  />
+))
+AlertDialogAction.displayName = AlertDialogPrimitive.Action.displayName
+
+const AlertDialogCancel = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Cancel>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Cancel>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Cancel
+    ref={ref}
+    className={cn(
+      buttonVariants({ variant: "outline" }),
+      "mt-2 sm:mt-0",
+      className
+    )}
+    {...props}
+  />
+))
+AlertDialogCancel.displayName = AlertDialogPrimitive.Cancel.displayName
+
+export {
+  AlertDialog,
+  AlertDialogPortal,
+  AlertDialogOverlay,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+}
+</file>
+
+<file path="frontend/src/components/ui/button.tsx">
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        outline:
+          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-10 px-4 py-2",
+        sm: "h-9 rounded-md px-3",
+        lg: "h-11 rounded-md px-8",
+        icon: "h-10 w-10",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button"
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
+Button.displayName = "Button"
+
+export { Button, buttonVariants }
+</file>
+
+<file path="frontend/src/components/ui/checkbox.tsx">
+import * as React from "react"
+import * as CheckboxPrimitive from "@radix-ui/react-checkbox"
+import { Check } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+const Checkbox = React.forwardRef<
+  React.ElementRef<typeof CheckboxPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>
+>(({ className, ...props }, ref) => (
+  <CheckboxPrimitive.Root
+    ref={ref}
+    className={cn(
+      "peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground",
+      className
+    )}
+    {...props}
+  >
+    <CheckboxPrimitive.Indicator
+      className={cn("flex items-center justify-center text-current")}
+    >
+      <Check className="h-4 w-4" />
+    </CheckboxPrimitive.Indicator>
+  </CheckboxPrimitive.Root>
+))
+Checkbox.displayName = CheckboxPrimitive.Root.displayName
+
+export { Checkbox }
+</file>
+
+<file path="frontend/src/components/ui/dialog.tsx">
+import * as React from "react"
+import * as DialogPrimitive from "@radix-ui/react-dialog"
+import { X } from "lucide-react"
+
+import { cn } from "@/lib/utils"
+
+const Dialog = DialogPrimitive.Root
+
+const DialogTrigger = DialogPrimitive.Trigger
+
+const DialogPortal = DialogPrimitive.Portal
+
+const DialogClose = DialogPrimitive.Close
+
+const DialogOverlay = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Overlay
+    ref={ref}
+    className={cn(
+      "fixed inset-0 z-50 bg-black/80  data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      className
+    )}
+    {...props}
+  />
+))
+DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
+
+const DialogContent = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
+>(({ className, children, ...props }, ref) => (
+  <DialogPortal>
+    <DialogOverlay />
+    <DialogPrimitive.Content
+      ref={ref}
+      className={cn(
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        className
+      )}
+      {...props}
+    >
+      {children}
+      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+        <X className="h-4 w-4" />
+        <span className="sr-only">Close</span>
+      </DialogPrimitive.Close>
+    </DialogPrimitive.Content>
+  </DialogPortal>
+))
+DialogContent.displayName = DialogPrimitive.Content.displayName
+
+const DialogHeader = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col space-y-1.5 text-center sm:text-left",
+      className
+    )}
+    {...props}
+  />
+)
+DialogHeader.displayName = "DialogHeader"
+
+const DialogFooter = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn(
+      "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
+      className
+    )}
+    {...props}
+  />
+)
+DialogFooter.displayName = "DialogFooter"
+
+const DialogTitle = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Title>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Title
+    ref={ref}
+    className={cn(
+      "text-lg font-semibold leading-none tracking-tight",
+      className
+    )}
+    {...props}
+  />
+))
+DialogTitle.displayName = DialogPrimitive.Title.displayName
+
+const DialogDescription = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Description>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
+>(({ className, ...props }, ref) => (
+  <DialogPrimitive.Description
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+DialogDescription.displayName = DialogPrimitive.Description.displayName
+
+export {
+  Dialog,
+  DialogPortal,
+  DialogOverlay,
+  DialogClose,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+}
+</file>
+
+<file path="frontend/src/components/ui/drawer.tsx">
+import * as React from "react"
+import { Drawer as DrawerPrimitive } from "vaul"
+
+import { cn } from "@/lib/utils"
+
+const Drawer = ({
+  shouldScaleBackground = true,
+  ...props
+}: React.ComponentProps<typeof DrawerPrimitive.Root>) => (
+  <DrawerPrimitive.Root
+    shouldScaleBackground={shouldScaleBackground}
+    {...props}
+  />
+)
+Drawer.displayName = "Drawer"
+
+const DrawerTrigger = DrawerPrimitive.Trigger
+
+const DrawerPortal = DrawerPrimitive.Portal
+
+const DrawerClose = DrawerPrimitive.Close
+
+const DrawerOverlay = React.forwardRef<
+  React.ElementRef<typeof DrawerPrimitive.Overlay>,
+  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Overlay>
+>(({ className, ...props }, ref) => (
+  <DrawerPrimitive.Overlay
+    ref={ref}
+    className={cn("fixed inset-0 z-50 bg-black/80", className)}
+    {...props}
+  />
+))
+DrawerOverlay.displayName = DrawerPrimitive.Overlay.displayName
+
+const DrawerContent = React.forwardRef<
+  React.ElementRef<typeof DrawerPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Content>
+>(({ className, children, ...props }, ref) => (
+  <DrawerPortal>
+    <DrawerOverlay />
+    <DrawerPrimitive.Content
+      ref={ref}
+      className={cn(
+        "fixed inset-x-0 bottom-0 z-50 mt-24 flex h-auto flex-col rounded-t-[10px] border bg-background",
+        className
+      )}
+      {...props}
+    >
+      <div className="mx-auto mt-4 h-2 w-[100px] rounded-full bg-muted" />
+      {children}
+    </DrawerPrimitive.Content>
+  </DrawerPortal>
+))
+DrawerContent.displayName = "DrawerContent"
+
+const DrawerHeader = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn("grid gap-1.5 p-4 text-center sm:text-left", className)}
+    {...props}
+  />
+)
+DrawerHeader.displayName = "DrawerHeader"
+
+const DrawerFooter = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn("mt-auto flex flex-col gap-2 p-4", className)}
+    {...props}
+  />
+)
+DrawerFooter.displayName = "DrawerFooter"
+
+const DrawerTitle = React.forwardRef<
+  React.ElementRef<typeof DrawerPrimitive.Title>,
+  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Title>
+>(({ className, ...props }, ref) => (
+  <DrawerPrimitive.Title
+    ref={ref}
+    className={cn(
+      "text-lg font-semibold leading-none tracking-tight",
+      className
+    )}
+    {...props}
+  />
+))
+DrawerTitle.displayName = DrawerPrimitive.Title.displayName
+
+const DrawerDescription = React.forwardRef<
+  React.ElementRef<typeof DrawerPrimitive.Description>,
+  React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Description>
+>(({ className, ...props }, ref) => (
+  <DrawerPrimitive.Description
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+DrawerDescription.displayName = DrawerPrimitive.Description.displayName
+
+export {
+  Drawer,
+  DrawerPortal,
+  DrawerOverlay,
+  DrawerTrigger,
+  DrawerClose,
+  DrawerContent,
+  DrawerHeader,
+  DrawerFooter,
+  DrawerTitle,
+  DrawerDescription,
+}
+</file>
+
+<file path="frontend/src/components/ui/input.tsx">
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
+  ({ className, type, ...props }, ref) => {
+    return (
+      <input
+        type={type}
+        className={cn(
+          "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm",
+          className
+        )}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
+Input.displayName = "Input"
+
+export { Input }
+</file>
+
+<file path="frontend/src/components/ui/popover.tsx">
+"use client"
+
+import * as React from "react"
+import * as PopoverPrimitive from "@radix-ui/react-popover"
+
+import { cn } from "@/lib/utils"
+
+const Popover = PopoverPrimitive.Root
+
+const PopoverTrigger = PopoverPrimitive.Trigger
+
+const PopoverContent = React.forwardRef<
+  React.ElementRef<typeof PopoverPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
+>(({ className, align = "center", sideOffset = 4, ...props }, ref) => (
+  <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Content
+      ref={ref}
+      align={align}
+      sideOffset={sideOffset}
+      className={cn(
+        "z-50 w-72 rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+        className
+      )}
+      {...props}
+    />
+  </PopoverPrimitive.Portal>
+))
+PopoverContent.displayName = PopoverPrimitive.Content.displayName
+
+export { Popover, PopoverTrigger, PopoverContent }
+</file>
+
+<file path="frontend/src/components/ui/scroll-area.tsx">
+import * as React from "react"
+import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area"
+
+import { cn } from "@/lib/utils"
+
+const ScrollArea = React.forwardRef<
+  React.ElementRef<typeof ScrollAreaPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
+>(({ className, children, ...props }, ref) => (
+  <ScrollAreaPrimitive.Root
+    ref={ref}
+    className={cn("relative overflow-hidden", className)}
+    {...props}
+  >
+    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
+      {children}
+    </ScrollAreaPrimitive.Viewport>
+    <ScrollBar />
+    <ScrollAreaPrimitive.Corner />
+  </ScrollAreaPrimitive.Root>
+))
+ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName
+
+const ScrollBar = React.forwardRef<
+  React.ElementRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>,
+  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>
+>(({ className, orientation = "vertical", ...props }, ref) => (
+  <ScrollAreaPrimitive.ScrollAreaScrollbar
+    ref={ref}
+    orientation={orientation}
+    className={cn(
+      "flex touch-none select-none transition-colors",
+      orientation === "vertical" &&
+        "h-full w-2.5 border-l border-l-transparent p-[1px]",
+      orientation === "horizontal" &&
+        "h-2.5 flex-col border-t border-t-transparent p-[1px]",
+      className
+    )}
+    {...props}
+  >
+    <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-border" />
+  </ScrollAreaPrimitive.ScrollAreaScrollbar>
+))
+ScrollBar.displayName = ScrollAreaPrimitive.ScrollAreaScrollbar.displayName
+
+export { ScrollArea, ScrollBar }
+</file>
+
+<file path="frontend/src/components/ui/toggle.tsx">
+import * as React from "react"
+import * as TogglePrimitive from "@radix-ui/react-toggle"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const toggleVariants = cva(
+  "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors hover:bg-muted hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-accent data-[state=on]:text-accent-foreground [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 gap-2",
+  {
+    variants: {
+      variant: {
+        default: "bg-transparent",
+        outline:
+          "border border-input bg-transparent hover:bg-accent hover:text-accent-foreground",
+      },
+      size: {
+        default: "h-10 px-3 min-w-10",
+        sm: "h-9 px-2.5 min-w-9",
+        lg: "h-11 px-5 min-w-11",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+const Toggle = React.forwardRef<
+  React.ElementRef<typeof TogglePrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof TogglePrimitive.Root> &
+    VariantProps<typeof toggleVariants>
+>(({ className, variant, size, ...props }, ref) => (
+  <TogglePrimitive.Root
+    ref={ref}
+    className={cn(toggleVariants({ variant, size, className }))}
+    {...props}
+  />
+))
+
+Toggle.displayName = TogglePrimitive.Root.displayName
+
+export { Toggle, toggleVariants }
+</file>
+
+<file path="frontend/src/components/change-nickname-button.tsx">
+import { FormEvent, useEffect, useState } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  AdaptiveDialog,
+  AdaptiveDialogContent,
+  AdaptiveDialogHeader,
+  AdaptiveDialogTitle,
+  AdaptiveDialogTrigger,
+} from "@/components/ui/adaptive-dialog"
+import { API } from "@/lib/api"
+
+interface ChangeNicknameProps {
+  api: API
+  channel: string
+}
+
+export function ChangeNicknameButton({ api, channel }: ChangeNicknameProps) {
+  const [myself, setMyself] = useState(api.getMyself(channel))
+  const [name, setName] = useState(myself.name)
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    return api.subscribeToPeers(channel, () => {
+      setMyself(api.getMyself(channel))
+    })
+  }, [api, channel])
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    if (name.trim()) {
+      api.setNickname(channel, name)
+      setOpen(false)
+    }
+  }
+  return (
+    <AdaptiveDialog open={open} onOpenChange={setOpen}>
+      <AdaptiveDialogTrigger>
+        <Button variant="secondary" size="sm">Change nickname</Button>
+      </AdaptiveDialogTrigger>
+      <AdaptiveDialogContent className="sm:max-w-[425px]">
+        <AdaptiveDialogHeader>
+          <AdaptiveDialogTitle>Change nickname</AdaptiveDialogTitle>
+        </AdaptiveDialogHeader>
+        <form onSubmit={handleSubmit} className="flex space-x-2">
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your nickname" />
+          <Button size="sm" type="submit">Save</Button>
+        </form>
+      </AdaptiveDialogContent>
+    </AdaptiveDialog>
+  )
+}
+</file>
+
+<file path="frontend/src/components/chatview.tsx">
+"use client"
+
+import type React from "react"
+
+import { useState, useRef, useEffect, useCallback } from "react"
+import TimeAgo from 'react-timeago'
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { ArrowDown, ChevronLeft, Settings } from "lucide-react"
+import { type API, Message, PeerInfo, PeerRole } from "../lib/api"
+import { log } from "../lib/log"
+import clsx from "clsx"
+import { LeaveChannelButton } from "./leave-channel-button"
+import { ChangeNicknameButton } from "./change-nickname-button"
+
+import { useIsDesktop } from "@/hooks/use-media-query"
+import { Toggle } from "./ui/toggle"
+import { InviteButton } from "./invitepopup"
+
+interface ChatViewProps extends MessageViewProps {
+  api: API
+  channel: string
+  onClose: () => void
+}
+
+export default function ChatView({ api, channel, onClose }: ChatViewProps) {
+  const isDesktop = useIsDesktop()
+  const [showMeta, setShowMeta] = useState(false)
+  const cls = clsx(
+    "flex flex-grow overflow-hidden",
+  )
+  let extraButtons
+  if (!isDesktop) {
+    extraButtons = (
+      <Toggle pressed={showMeta} onPressedChange={setShowMeta} title="peers and settings">
+        {!showMeta && <Settings />}
+        {showMeta && <ChevronLeft />}
+      </Toggle>
+    )
+  }
+  return (
+    <div className={cls}>
+      {(isDesktop || !showMeta) && (
+        <MessageView api={api} channel={channel} extraButtons={extraButtons} />
+      )}
+      {(isDesktop) && (
+        <div className="w-md">
+          <Meta api={api} channel={channel} onClose={onClose} />
+        </div>
+      )}
+      {(showMeta) && <Meta api={api} channel={channel} onClose={onClose} extraButtons={extraButtons} />}
+    </div>
+  )
+}
+
+interface MessageViewProps {
+  api: API
+  channel: string
+  extraButtons?: React.ReactElement
+}
+
+export function MessageView({ api, channel, extraButtons }: MessageViewProps) {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [inputMessage, setInputMessage] = useState("")
+  const [showScrollButton, setShowScrollButton] = useState(false)
+  const [isScrolledToBottom, setIsScrolledToBottom] = useState(true)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+
+
+  const scrollToBottom = useCallback(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" })
+    }
+    setShowScrollButton(false)
+    setIsScrolledToBottom(true)
+  }, [])
+
+
+  useEffect(() => {
+    setMessages(api.getMessages(channel))
+    scrollToBottom()
+
+    // Subscribe to new messages
+    const unsubscribeMessages = api.subscribeToMessages(channel, (newMessage) => {
+      setMessages((prevMessages) => {
+        // Check if the message already exists to prevent duplicates
+        if (!prevMessages.some((msg) => msg.id === newMessage.id)) {
+          const updatedMessages = [...prevMessages, newMessage]
+          if (isScrolledToBottom) {
+            setTimeout(scrollToBottom, 0)
+          } else {
+            setShowScrollButton(true)
+          }
+          return updatedMessages
+        }
+        return prevMessages
+      })
+      log.info(`New message received: ${newMessage.content}`)
+    })
+
+
+    // Cleanup function
+    return unsubscribeMessages
+  }, [channel, isScrolledToBottom, scrollToBottom])
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (inputMessage.trim()) {
+      try {
+        await api.sendMessage(channel, inputMessage.trim())
+        setInputMessage("")
+        log.info(`Message sent in channel ${channel}: ${inputMessage.trim()}`)
+      } catch (error) {
+        log.error('Failed to send message', error)
+      }
+    }
+  }
+
+  const handleScroll = useCallback(() => {
+    if (scrollAreaRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollAreaRef.current
+      const isBottom = scrollTop + clientHeight >= scrollHeight - 10
+      setIsScrolledToBottom(isBottom)
+      setShowScrollButton(!isBottom)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isScrolledToBottom) {
+      scrollToBottom()
+    }
+  }, [isScrolledToBottom, scrollToBottom])
+
+  useEffect(() => {
+    const scrollArea = scrollAreaRef.current
+    if (scrollArea) {
+      scrollArea.addEventListener("scroll", handleScroll)
+      return () => scrollArea.removeEventListener("scroll", handleScroll)
+    }
+  }, [handleScroll])
+
+  return (
+    <div className="flex-grow flex flex-col p-4 relative">
+      <ScrollArea className="flex-grow mb-4 border rounded-md p-4" ref={scrollAreaRef} onScroll={handleScroll}>
+        {messages.map((msg) => (
+          <div key={msg.id} className="mb-2">
+            <span className="font-bold">{msg.nickname || msg.sender.substring(0, 8)}: </span>
+            {msg.content}
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </ScrollArea>
+      {showScrollButton && (
+        <Button className="absolute bottom-20 right-4 rounded-full p-2" onClick={scrollToBottom} size="icon">
+          <ArrowDown className="h-4 w-4" />
+        </Button>
+      )}
+      <form onSubmit={handleSendMessage} className="flex space-x-2">
+        <Input
+          value={inputMessage}
+          onChange={(e) => setInputMessage(e.target.value)}
+          placeholder="Type your message..."
+          className="flex-grow"
+        />
+        <Button type="submit">
+          Send
+        </Button>
+        {extraButtons}
+      </form>
+    </div>
+  )
+}
+
+function Meta({ api, channel, onClose, extraButtons }: ChatViewProps & { extraButtons?: React.ReactElement }) {
+  const [peers, setPeers] = useState<PeerInfo[]>([])
+  const [neighbors, setNeighbors] = useState(0)
+  useEffect(() => {
+    return api.subscribeToNeighbors(channel, setNeighbors)
+  }, [channel])
+
+  useEffect(() => {
+    setPeers([...api.getPeers(channel)])
+    return api.subscribeToPeers(channel, () => setPeers([...api.getPeers(channel)]))
+  }, [channel])
+  const sortedPeers = [...peers].sort((a, b) => {
+    const statusOrder = { online: 0, away: 1, offline: 2 }
+    return statusOrder[a.status] - statusOrder[b.status]
+  })
+
+  return (
+    <div className="p-4 border-l flex flex-col">
+      <div>
+        {extraButtons}
+      </div>
+      <div className="mb-4">
+        <h2 className="font-bold mb-2">Status</h2>
+        {neighbors > 0 && (
+          <p>Connected <span className="text-sm">({neighbors} neighbors)</span></p>
+        )}
+        {neighbors === 0 && (
+          <p>Waiting for peers</p>
+        )}
+      </div>
+      <div className="mb-4 flex space-x-2">
+        <InviteButton channel={channel} getTicket={opts => api.getTicket(channel, opts)} />
+      </div>
+      <div className="mb-4 flex space-x-2">
+        <ChangeNicknameButton api={api} channel={channel} />
+        <LeaveChannelButton onConfirm={onClose} />
+      </div>
+      <h2 className="font-bold mb-2">Peers</h2>
+      <div className="flex-grow">
+        <ScrollArea className="h-full">
+          {sortedPeers.map((peer) => (
+            <Peer peer={peer} key={peer.id} />
+          ))}
+        </ScrollArea>
+      </div>
+    </div>
+  )
+}
+
+
+
+interface PeerProps {
+  peer: PeerInfo
+}
+
+function Peer({ peer }: PeerProps) {
+  const isMyself = peer.role == PeerRole.Myself
+  const popoverContent = isMyself ? <MyselfInfo peer={peer} /> :
+    <RemotePeerInfo peer={peer} />
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <div className="flex items-center mb-2 cursor-pointer">
+          <div className={`w-2 h-2 rounded-full mr-2 ${getStatusColor(peer.status)}`}></div>
+          <span className={clsx(isMyself && 'italic')}>{peer.name}</span>
+        </div>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 bg-secondary">
+        {popoverContent}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function MyselfInfo({ peer }: PeerProps) {
+  return (
+    <div className="space-y-2">
+      This is us :)
+      <div>
+        <strong>Node ID:</strong>
+        <NodeId nodeId={peer.id} />
+      </div>
+    </div>
+  )
+}
+
+function RemotePeerInfo({ peer }: PeerProps) {
+  return (
+    <div className="space-y-2">
+      <p>
+        <strong>Last seen:</strong> <TimeAgo date={peer.lastSeen} />
+      </p>
+      <div>
+        <strong>Node ID:</strong>
+        <NodeId nodeId={peer.id} />
+      </div>
+    </div>
+  )
+}
+
+interface NodeIdProps {
+  nodeId: string
+}
+
+function NodeId({ nodeId }: NodeIdProps) {
+  return (
+    <>
+      <span className="ml-2 font-mono">{nodeId.substring(0, 8)}…</span>
+      <Button size="sm" onClick={() => copyToClipboard(nodeId)} className="ml-2 inline" variant="outline">
+        Copy
+      </Button>
+    </>
+  )
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text)
+}
+
+function getStatusColor(status: PeerInfo["status"]) {
+  switch (status) {
+    case "online":
+      return "bg-green-500"
+    case "away":
+      return "bg-yellow-500"
+    case "offline":
+      return "bg-red-500"
+    default:
+      return "bg-gray-500"
+  }
+}
+</file>
+
+<file path="frontend/src/components/header.tsx">
+"use client"
+
+import { Button } from "@/components/ui/button"
+import { UserPlus, Moon, Sun } from "lucide-react"
+import { useTheme } from "next-themes"
+import { useEffect, useState } from "react"
+import { LogViewButton } from "./logview"
+
+interface HeaderProps {
+  onInviteClick?: () => void
+  title?: string | null
+}
+
+export default function Header({
+  onInviteClick,
+  title,
+}: HeaderProps) {
+  return (
+    <header className="bg-background text-foreground p-4 flex justify-between items-center">
+      <div className="flex items-center">
+        {title && <h1 className="text-xl font-bold mr-4">{title}</h1>}
+      </div>
+      <div className="flex items-center space-x-2">
+        {onInviteClick && (
+          <Button onClick={onInviteClick} variant="default">
+            <UserPlus className="w-4 h-4 mr-2" />
+            Invite
+          </Button>
+        )}
+        <LogViewButton />
+        {/* <Button onClick={onLogsClick} variant="secondary">
+          <FileText className="w-4 h-4 mr-2" />
+          Logs
+        </Button> */}
+        <ThemeToggle />
+      </div>
+    </header>
+  )
+}
+
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => setMounted(true), [])
+
+  if (!mounted) return null
+
+  return (
+    <Button variant="ghost" size="icon" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+      {theme === "light" ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+      <span className="sr-only">Toggle theme</span>
+    </Button>
+  )
+}
+</file>
+
+<file path="frontend/src/components/homescreen.tsx">
+"use client"
+
+import { useState, type FormEvent } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+
+import { generate as generateName } from 'yet-another-name-generator'
+
+interface HomeScreenProps {
+  onJoin: (ticket: string, nickname: string) => void
+  onCreate: (nickname: string) => void
+}
+
+export default function HomeScreen({ onJoin, onCreate }: HomeScreenProps) {
+  const [ticket, setTicket] = useState(() => {
+    const url = new URL(document.location.toString())
+    const ticket = url.searchParams.get("ticket")
+    if (ticket?.startsWith("chat")) return ticket
+    return ""
+  })
+
+  const [nickname, setNickname] = useState(generateName())
+
+  const handleJoin = (e: FormEvent) => {
+    e.preventDefault()
+    if (ticket.trim()) {
+      onJoin(ticket.trim(), nickname)
+    }
+  }
+
+  const handleCreate = (e: FormEvent) => {
+    e.preventDefault()
+    onCreate(nickname)
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center flex-grow p-4">
+      <div className="w-full max-w-md space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold mb-2">Your name</h2>
+          <div className="flex space-x-2">
+            <Input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Enter your name" />
+          </div>
+        </div>
+        <form onSubmit={handleJoin}>
+          <h2 className="text-lg font-semibold mb-2">Join Channel</h2>
+          <div className="flex space-x-2">
+            <Input value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="Enter ticket" />
+            <Button type="submit" disabled={!nickname.length || !ticket.length}>Join</Button>
+          </div>
+        </form>
+        <form onSubmit={handleCreate}>
+          <h2 className="text-lg font-semibold mb-2">Create Channel</h2>
+          <div className="flex space-x-2">
+            <Button type="submit" disabled={!nickname.length}>Create</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+</file>
+
+<file path="frontend/src/components/invitepopup.tsx">
+"use client"
+
+import { useState, useRef, useMemo } from "react"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import {
+  AdaptiveDialog,
+  AdaptiveDialogContent,
+  AdaptiveDialogHeader,
+  AdaptiveDialogTitle,
+  AdaptiveDialogTrigger,
+} from "@/components/ui/adaptive-dialog"
+import { Copy, Share2 } from "lucide-react"
+import { TicketOpts } from "@/lib/api"
+import { useIsDesktop } from "@/hooks/use-media-query"
+import clsx from "clsx"
+
+function ticketUrl(ticket: string) {
+  const baseUrl = new URL(document.location.toString())
+  baseUrl.searchParams.set("ticket", ticket)
+  return baseUrl.toString()
+}
+
+interface InvitePopupProps {
+  channel: string
+  getTicket: (options: {
+    includeMyself: boolean
+    includeBootstrap: boolean
+    includeNeighbors: boolean
+  }) => string
+}
+export function InviteButton({ channel, getTicket }: InvitePopupProps) {
+  const [open, setOpen] = useState(false)
+  const isDesktop = useIsDesktop()
+  const cls = clsx(
+    isDesktop ? 'w-2xl max-w-3xl' : 'max-w-[100vw]',
+    "max-h-[80vh]"
+  )
+  return (
+    <AdaptiveDialog open={open} onOpenChange={setOpen}>
+      <AdaptiveDialogTrigger>
+        <Button variant="default">
+          <Share2 />
+          Invite peers
+        </Button>
+      </AdaptiveDialogTrigger>
+      <AdaptiveDialogContent className={cls}>
+        <div className="">
+          <AdaptiveDialogHeader>
+            <AdaptiveDialogTitle>Invite peers</AdaptiveDialogTitle>
+          </AdaptiveDialogHeader>
+          <div className="grow-0 mt-2 max-h-[60vh] max-w-2xl overflow-auto">
+            <InvitePopupContent channel={channel} getTicket={getTicket} />
+          </div>
+        </div>
+      </AdaptiveDialogContent>
+    </AdaptiveDialog>
+  )
+}
+
+
+export function InvitePopupContent({ channel, getTicket }: InvitePopupProps) {
+  const [ticketOptions, setTicketOptions] = useState<TicketOpts>({
+    includeMyself: true,
+    includeBootstrap: true,
+    includeNeighbors: false,
+  })
+  const ticket = useMemo(() => getTicket(ticketOptions), [ticketOptions, channel])
+  const cliCommandRef = useRef<HTMLInputElement>(null)
+
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text)
+  }
+
+  const cliCommand = `cargo run -- join ${ticket}`
+
+  const ticketUrlFull = ticketUrl(ticket)
+  const ticketUrlShort = ticketUrl(ticket.substring(0, 16))
+
+  return (
+    <>
+      <div className="mb-4">
+        <p className="font-semibold mb-2">Ticket</p>
+        <div className="flex items-center">
+          <span className="mr-2 font-mono">{ticket.substring(0, 16)}...</span>
+          <Button variant="outline" size="sm" onClick={() => copyToClipboard(ticket)}>
+            <Copy className="w-4 h-4 mr-2" />
+            Copy
+          </Button>
+        </div>
+      </div>
+      <div className="mb-4">
+        <p className="font-semibold mb-2">Join link</p>
+        <div className="flex items-center space-x-2">
+          <a href={ticketUrlFull} className="text-blue-500 hover:underline" target="_blank">
+            {ticketUrlShort}…
+          </a>
+          <Button variant="outline" size="sm" onClick={() => copyToClipboard(ticketUrlFull)}>
+            <Copy className="w-4 h-4 mr-2" />
+            Copy
+          </Button>
+        </div>
+      </div>
+      <div className="mb-4">
+        <p className="font-semibold mb-2">Join from the command line</p>
+        <Input
+          ref={cliCommandRef}
+          value={cliCommand}
+          readOnly
+          className="mb-2"
+          onClick={() => cliCommandRef.current?.select()}
+        />
+        <Button variant="outline" size="sm" onClick={() => copyToClipboard(cliCommand)}>
+          <Copy className="w-4 h-4 mr-2" />
+          Copy to Clipboard
+        </Button>
+      </div>
+      <div className="mb-4">
+        <h3 className="font-semibold mb-2">Configure ticket</h3>
+        <div className="space-y-2">
+          <div className="flex items-center">
+            <Checkbox
+              id="include-myself"
+              checked={ticketOptions.includeMyself}
+              onCheckedChange={(checked) => setTicketOptions({ ...ticketOptions, includeMyself: !!checked })}
+            />
+            <label htmlFor="include-myself" className="ml-2">
+              Include myself
+            </label>
+          </div>
+          <div className="flex items-center">
+            <Checkbox
+              id="include-bootstrap"
+              checked={ticketOptions.includeBootstrap}
+              onCheckedChange={(checked) => setTicketOptions({ ...ticketOptions, includeBootstrap: !!checked })}
+            />
+            <label htmlFor="include-bootstrap" className="ml-2">
+              Include my bootstrap
+            </label>
+          </div>
+          <div className="flex items-center">
+            <Checkbox
+              id="include-neighbors"
+              checked={ticketOptions.includeNeighbors}
+              onCheckedChange={(checked) => setTicketOptions({ ...ticketOptions, includeNeighbors: !!checked })}
+            />
+            <label htmlFor="include-neighbors" className="ml-2">
+              Include my current neighbors
+            </label>
+          </div>
+        </div>
+      </div >
+    </>
+  )
+}
+</file>
+
+<file path="frontend/src/components/leave-channel-button.tsx">
+import {
+  AdaptiveDialog,
+  AdaptiveDialogContent,
+  AdaptiveDialogDescription,
+  AdaptiveDialogHeader,
+  AdaptiveDialogTitle,
+  AdaptiveDialogTrigger,
+} from "@/components/ui/adaptive-dialog"
+import { Button } from "@/components/ui/button"
+
+interface LeaveChannelProps {
+  onConfirm: () => void
+}
+export function LeaveChannelButton({ onConfirm }: LeaveChannelProps) {
+  return (
+    <AdaptiveDialog>
+      <AdaptiveDialogTrigger>
+        <Button size="sm" variant="destructive">Leave channel</Button>
+      </AdaptiveDialogTrigger>
+      <AdaptiveDialogContent>
+        <AdaptiveDialogHeader>
+          <AdaptiveDialogTitle>
+            Are you sure?
+          </AdaptiveDialogTitle>
+          <AdaptiveDialogDescription>
+            If you want to rejoin the channel, make sure to save a ticket first by clicking the <em>Invite</em> button.
+          </AdaptiveDialogDescription>
+        </AdaptiveDialogHeader>
+        <Button onClick={onConfirm}>Leave channel</Button>
+      </AdaptiveDialogContent>
+    </AdaptiveDialog>
+  )
+}
+</file>
+
+<file path="frontend/src/components/logview.tsx">
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
+import {
+  AdaptiveDialog,
+  AdaptiveDialogContent,
+  AdaptiveDialogHeader,
+  AdaptiveDialogTitle,
+  AdaptiveDialogTrigger,
+} from "@/components/ui/adaptive-dialog"
+import { useEffect, useState } from "react";
+import { log, LogMessage } from "@/lib/log";
+import { FileText } from "lucide-react";
+import { useIsDesktop } from "@/hooks/use-media-query";
+import clsx from "clsx";
+
+export function LogViewButton() {
+  const [open, setOpen] = useState(false)
+  const isDesktop = useIsDesktop()
+  const cls = clsx(
+    isDesktop ? 'w-2xl max-w-3xl' : 'max-w-[100vw]',
+    "max-h-[80vh]"
+  )
+  return (
+    <AdaptiveDialog open={open} onOpenChange={setOpen}>
+      <AdaptiveDialogTrigger>
+        <Button variant="secondary">
+          <FileText className="w-4 h-4 mr-2" />
+          Logs
+        </Button>
+      </AdaptiveDialogTrigger>
+      <AdaptiveDialogContent className={cls}>
+        <div className="">
+          <AdaptiveDialogHeader>
+            <AdaptiveDialogTitle>Logs</AdaptiveDialogTitle>
+          </AdaptiveDialogHeader>
+          <div className="grow-0 mt-2 max-h-[60vh] max-w-2xl overflow-auto">
+            <LogView />
+          </div>
+        </div>
+      </AdaptiveDialogContent>
+    </AdaptiveDialog>
+  )
+}
+
+export function LogView() {
+  const logs = useLogs();
+
+  const formatTimestamp = (date: Date) => {
+    return date.toTimeString().split(" ")[0] + "." + date.getMilliseconds().toString().padStart(3, "0").slice(0, 2)
+  }
+
+  const getLogColor = (level: "info" | "warn" | "error") => {
+    switch (level) {
+      case "error":
+        return "text-red-500"
+      case "warn":
+        return "text-yellow-500"
+      default:
+        return "text-foreground"
+    }
+  }
+
+  return (
+    <div className="max-w-3xl overflow-hidden flex flex-col relative">
+      <ScrollArea className="flex-grow mb-4 font-mono overflow-auto">
+        <div className="space-y-1">
+          {logs.map((log, index) => (
+            <div key={index} className={`${getLogColor(log.level)}`}>
+              <span className="text-muted-foreground">{formatTimestamp(log.timestamp)}</span> {log.message}
+            </div>
+          ))}
+        </div>
+      </ScrollArea>
+    </div>
+  )
+}
+
+
+function useLogs() {
+  const [logs, setLogs] = useState<LogMessage[]>([...log.get()])
+  useEffect(() => {
+    const unsubscribe = log.subscribe((logMessage) => {
+      setLogs((prevLogs) => [...prevLogs, logMessage])
+    })
+    return () => unsubscribe()
+  }, [])
+  return logs
+}
+</file>
+
+<file path="frontend/src/components/sidebar.tsx">
+"use client"
+
+import { useState } from "react"
+import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { PlusCircle, Hash, ChevronLeft, ChevronRight } from "lucide-react"
+import type { ChannelInfo } from "../lib/api"
+import clsx from "clsx"
+
+interface SidebarProps {
+  channels: ChannelInfo[]
+  activeChannel: string | null
+  onChannelSelect: (channelId: string) => void
+  onNewChannel: () => void
+}
+
+export default function Sidebar({ channels, activeChannel, onChannelSelect, onNewChannel }: SidebarProps) {
+  const [isCollapsed, setIsCollapsed] = useState(false)
+
+  return (
+    <div className={`bg-secondary h-full flex flex-col transition-all duration-300 ${isCollapsed ? "w-12" : "w-64"}`}>
+      <div className="p-4 flex justify-between items-center">
+        {!isCollapsed && <h2 className="text-lg font-semibold">Channels</h2>}
+        <Button variant="ghost" size="icon" onClick={() => setIsCollapsed(!isCollapsed)}>
+          {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
+        </Button>
+      </div>
+      <ScrollArea className="flex-grow">
+        {channels.map((channel) => {
+          const cls = clsx(
+            channel.id === activeChannel && "bg-primary/10",
+            isCollapsed ? "px-2" : "px-4"
+          )
+          return (
+            <Button
+              key={channel.id}
+              variant="ghost"
+              className={`w-full justify-start px-4 py-2 hover:bg-primary/20 rounded-none ${cls}`}
+              onClick={() => onChannelSelect(channel.id)}
+            >
+              <Hash className="h-4 w-4 mr-2" />
+              {!isCollapsed && channel.name}
+            </Button>
+          )
+        })}
+      </ScrollArea>
+      <Button variant="default" onClick={onNewChannel} className="m-4">
+        <PlusCircle className="h-5 w-5" />
+        Add channel
+      </Button>
+    </div>
+  )
+}
+</file>
+
+<file path="frontend/src/hooks/use-media-query.ts">
+import * as React from "react"
+
+export function useMediaQuery(query: string) {
+  const [value, setValue] = React.useState(false)
+
+  React.useEffect(() => {
+    function onChange(event: MediaQueryListEvent) {
+      setValue(event.matches)
+    }
+
+    const result = matchMedia(query)
+    result.addEventListener("change", onChange)
+    setValue(result.matches)
+
+    return () => result.removeEventListener("change", onChange)
+  }, [query])
+
+  return value
+}
+
+export function useIsDesktop() {
+  const isDesktop = useMediaQuery("(min-width: 768px)")
+  return isDesktop
+}
+</file>
+
+<file path="frontend/src/lib/api.ts">
+import { log } from './log'
+
+// We want to only ever create the API once, therefore we define a module-level
+// singleton that holds the promise to create the API.
+// As promises can be awaited any number of times in JavaScript, this gives us
+// an async singleton instance to the wasm API.
+const api = importAndInitOnce()
+
+export async function initApi() {
+  return await api
+}
+
+async function importAndInitOnce() {
+  try {
+    log.info("Importing WASM module")
+    const { IrohAPI } = await import('./iroh')
+    return await IrohAPI.create()
+  } catch (err) {
+    log.error('Failed to import or launch iroh', err)
+    throw err
+  }
+}
+
+export interface API {
+  createChannel(nickname: string): Promise<ChannelInfo>
+  joinChannel(ticket: string, nickname: string): Promise<ChannelInfo>
+  sendMessage(channelId: string, message: string): void
+  setNickname(channelId: string, nickname: string): void
+  getMessages(channelId: string): Message[]
+  getPeers(channelId: string): PeerInfo[]
+  getMyself(channelId: string): PeerInfo
+  subscribeToMessages(
+    channelId: string,
+    callback: (message: Message) => void,
+  ): () => void
+  subscribeToPeers(
+    channelId: string,
+    callback: () => void,
+  ): () => void
+  subscribeToNeighbors(
+    channelId: string,
+    callback: (neighbors: number) => void,
+  ): () => void
+  getTicket(channelId: string, opts: TicketOpts): string
+  closeChannel(channelId: string): Promise<void>
+}
+
+export type SubscribeCb = (message: Message) => void;
+
+export type ChannelInfo = {
+  id: string
+  name: string
+}
+
+export type TicketOpts = {
+  includeMyself: boolean
+  includeBootstrap: boolean
+  includeNeighbors: boolean
+}
+
+export interface Message {
+  id: string; sender: string; content: string, nickname?: string
+}
+
+export interface PeerInfo {
+  id: string
+  name: string
+  status: "online" | "away" | "offline"
+  lastSeen: Date
+  role: PeerRole
+}
+
+export enum PeerRole {
+  Myself,
+  RemoteNode
+}
+</file>
+
+<file path="frontend/src/lib/iroh.ts">
+import { PeerRole, type API, type ChannelInfo, type Message, type PeerInfo, type SubscribeCb, type TicketOpts } from "./api"
+import { log } from "./log"
+import { ChatNode, Channel as IrohChannel } from "chat-browser"
+
+type ChannelState = {
+  label: string
+  myself: PeerInfo
+  messages: Message[]
+  peers: Map<string, PeerInfo>
+  channel: IrohChannel
+  subscribers: SubscribeCb[]
+  neighborSubscribers: ((neighbors: number) => void)[]
+  peerSubscribers: (() => void)[]
+  neighbors: number
+  nextId: number
+  onClose: (() => void)
+}
+
+export class IrohAPI implements API {
+  private chatNode: ChatNode
+  private channels: Map<string, ChannelState> = new Map()
+
+  private constructor(chatNode: ChatNode) {
+    this.chatNode = chatNode
+  }
+
+  static async create(): Promise<IrohAPI> {
+    log.info("Spawning iroh node")
+    const chatNode = await ChatNode.spawn()
+    log.info(`Iroh node spawned. our node id: ${chatNode.node_id()}`)
+    return new IrohAPI(chatNode)
+  }
+
+  async createChannel(nickname: string): Promise<ChannelInfo> {
+    const channel = await this.chatNode.create(nickname)
+    return this.joinInner(channel, nickname)
+  }
+
+  async joinChannel(ticket: string, nickname: string): Promise<ChannelInfo> {
+    const channel = await this.chatNode.join(ticket, nickname)
+    return this.joinInner(channel, nickname)
+  }
+
+  joinInner(channel: IrohChannel, nickname: string) {
+    const id = channel.id()
+    log.info(`joining channel ${id}`)
+    const label = id.substring(5, 13)
+    let onClose
+    let onClosePromise = new Promise<void>(resolve => {
+      onClose = resolve
+    })
+    const nodeId = this.chatNode.node_id()
+    const myself: PeerInfo = {
+      id: nodeId,
+      name: nickname,
+      lastSeen: new Date(),
+      status: "online",
+      role: PeerRole.Myself
+    }
+    const state: ChannelState = {
+      label,
+      messages: [],
+      channel,
+      subscribers: [],
+      peers: new Map(),
+      nextId: 0,
+      neighbors: 0,
+      neighborSubscribers: [],
+      peerSubscribers: [],
+      myself,
+      onClose: onClose!
+    }
+    state.peers.set(nodeId, myself)
+    this.channels.set(id, state)
+
+    const subscribe = async () => {
+      const reader = channel.receiver.getReader() as ReadableStreamDefaultReader<ChatEvent>
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break;
+        }
+        const event = value;
+        console.debug("channel event", id.substring(0, 8), event)
+        if (event.type === "messageReceived") {
+          const peerInfo: PeerInfo = {
+            id: event.from,
+            name: event.nickname,
+            lastSeen: new Date(event.sentTimestamp / 1000),
+            status: "online",
+            role: PeerRole.RemoteNode
+          }
+          state.peers.set(event.from, peerInfo)
+          const message: Message = {
+            id: nextId(state),
+            sender: event.from,
+            content: event.text,
+          }
+          state.messages.push(message)
+          const messageWithName = withName(state, message)
+          for (const sub of state.subscribers) {
+            sub(messageWithName)
+          }
+          for (const sub of state.peerSubscribers) { sub() }
+        } else if (event.type === "presence") {
+          const peerInfo: PeerInfo = {
+            id: event.from,
+            name: event.nickname,
+            lastSeen: new Date(event.sentTimestamp / 1000),
+            status: "online",
+            role: PeerRole.RemoteNode
+          }
+          state.peers.set(event.from, peerInfo)
+          for (const sub of state.peerSubscribers) { sub() }
+        } else if (event.type === "joined") {
+          log.info(`joined channel ${id}`)
+          state.neighbors += event.neighbors.length
+          for (const sub of state.neighborSubscribers) { sub(state.neighbors) }
+        } else if (event.type === "neighborUp") {
+          state.neighbors += 1
+          for (const sub of state.neighborSubscribers) { sub(state.neighbors) }
+        } else if (event.type === "neighborDown") {
+          state.neighbors -= 1
+          for (const sub of state.neighborSubscribers) { sub(state.neighbors) }
+        }
+      }
+    }
+
+    const checkPeers = async () => {
+      while (true) {
+        const now = new Date()
+        for (const peer of state.peers.values()) {
+          if (peer.id === nodeId) {
+            peer.lastSeen = now
+            continue
+          }
+          const diff = (now.getTime() - peer.lastSeen.getTime()) / 1000;
+          if (diff > 20) {
+            peer.status = "offline"
+          } else if (diff > 10) {
+            peer.status = "away"
+          } else {
+            peer.status = "online"
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+
+    Promise.race([
+      onClosePromise,
+      subscribe(),
+      checkPeers()
+    ])
+
+    return { id, name: label }
+  }
+
+  getMyself(channelId: string): PeerInfo {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    return { ...state.myself }
+  }
+
+  getTicket(channelId: string, opts: TicketOpts) {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    return state.channel.ticket(opts)
+  }
+
+  async closeChannel(channelId: string): Promise<void> {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    state.onClose()
+    this.channels.delete(channelId)
+  }
+
+
+  async sendMessage(channelId: string, text: string): Promise<void> {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    await state.channel.sender.broadcast(text)
+    const me = this.chatNode.node_id();
+    const message = {
+      sender: me,
+      id: nextId(state),
+      content: text
+    }
+    state.messages.push(message)
+    const messageWithName = withName(state, message)
+    for (const sub of state.subscribers) {
+      sub(messageWithName)
+    }
+  }
+
+  setNickname(channelId: string, nickname: string) {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    console.log('state', state)
+    log.info(`changing nickname from ${state.myself.name} to ${nickname}`)
+    state.myself.name = nickname
+    state.channel.sender.set_nickame(nickname)
+    for (const sub of state.peerSubscribers) { sub() }
+  }
+
+
+  getMessages(channelId: string): Message[] {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    const messages = state.messages.map(message => withName(state, message))
+    return messages
+  }
+
+  getPeers(
+    channelId: string,
+  ): PeerInfo[] {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    return Array.from(state.peers.values())
+  }
+
+  subscribeToMessages(
+    channelId: string,
+    callback: (message: Message) => void,
+  ): () => void {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    state.subscribers.push(callback)
+    return () => {
+      state.subscribers = state.subscribers.filter(cb => cb != callback)
+    }
+  }
+
+  subscribeToNeighbors(channelId: string, callback: (neighbors: number) => void): () => void {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    callback(state.neighbors)
+    state.neighborSubscribers.push(callback)
+    return () => {
+      state.neighborSubscribers = state.neighborSubscribers.filter(cb => cb != callback)
+    }
+  }
+
+  subscribeToPeers(
+    channelId: string,
+    callback: () => void,
+  ): () => void {
+    const state = this.channels.get(channelId)
+    if (!state) {
+      throw new Error("Channel not found")
+    }
+    state.peerSubscribers.push(callback)
+    return () => {
+      state.peerSubscribers = state.peerSubscribers.filter(cb => cb != callback)
+    }
+  }
+}
+
+function getName(state: ChannelState, from: string) {
+  const peer = state.peers.get(from)
+  if (peer && peer.name) return peer.name
+  return from.substring(0, 8)
+}
+
+function withName(state: ChannelState, message: Message): Message {
+  return { ...message, nickname: getName(state, message.sender) }
+}
+
+function nextId(state: ChannelState): string {
+  const id = "" + state.nextId
+  state.nextId = state.nextId + 1
+  return id
+}
+
+// types used in chat-browser, for now they are defined manually here.
+type JoinedEvent = {
+  type: "joined"
+  neighbors: string[]
+}
+
+type MessageEvent = {
+  type: "messageReceived"
+  from: string,
+  text: string,
+  nickname: string,
+  sentTimestamp: number,
+}
+
+type PresenceEvent = {
+  type: "presence"
+  from: string,
+  nickname: string,
+  sentTimestamp: number,
+}
+
+type NeighborUpEvent = {
+  type: "neighborUp"
+  nodeId: string
+}
+
+type NeighborDownEvent = {
+  type: "neighborDown"
+  nodeId: string
+}
+
+type LaggedEvent = {
+  type: "lagged"
+}
+
+type ChatEvent = JoinedEvent | MessageEvent | NeighborUpEvent | NeighborDownEvent | PresenceEvent | LaggedEvent
+</file>
+
+<file path="frontend/src/lib/log.ts">
+// Log system
+export type LogLevel = "info" | "warn" | "error"
+
+export type LogMessage = {
+  timestamp: Date
+  level: LogLevel
+  message: string
+}
+
+class LogSystem {
+  private logs: LogMessage[] = []
+  private subscribers: Set<(log: LogMessage) => void> = new Set()
+
+  error(message: any, error?: any) {
+    console.error(message, error)
+    this.log(`${message} ${error || ""}`, "error")
+  }
+
+  info(message: string) {
+    this.log(message)
+  }
+
+  log(message: string, level: LogLevel = "info") {
+    const logMessage: LogMessage = {
+      timestamp: new Date(),
+      level,
+      message,
+    }
+    this.logs.push(logMessage)
+    this.notifySubscribers(logMessage)
+
+  }
+
+  get(): LogMessage[] {
+    return this.logs
+  }
+
+  subscribe(callback: (log: LogMessage) => void): () => void {
+    this.subscribers.add(callback)
+    return () => {
+      this.subscribers.delete(callback)
+    }
+  }
+
+  private notifySubscribers(log: LogMessage) {
+    this.subscribers.forEach((callback) => callback(log))
+  }
+}
+
+export const log = new LogSystem()
+</file>
+
+<file path="frontend/src/lib/utils.ts">
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+</file>
+
+<file path="frontend/src/app.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+    background: hsl(0 0% 3.9%);
+}
+
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    display: none;
+}
+
+@layer utilities {
+    .text-balance {
+        text-wrap: balance;
+    }
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 0 0% 3.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 3.9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 3.9%;
+        --primary: 0 0% 9%;
+        --primary-foreground: 0 0% 98%;
+        --secondary: 0 0% 96.1%;
+        --secondary-foreground: 0 0% 9%;
+        --muted: 0 0% 96.1%;
+        --muted-foreground: 0 0% 45.1%;
+        --accent: 0 0% 96.1%;
+        --accent-foreground: 0 0% 9%;
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 89.8%;
+        --input: 0 0% 89.8%;
+        --ring: 0 0% 3.9%;
+        --chart-1: 12 76% 61%;
+        --chart-2: 173 58% 39%;
+        --chart-3: 197 37% 24%;
+        --chart-4: 43 74% 66%;
+        --chart-5: 27 87% 67%;
+        --radius: 0.5rem;
+        --sidebar-background: 0 0% 98%;
+        --sidebar-foreground: 240 5.3% 26.1%;
+        --sidebar-primary: 240 5.9% 10%;
+        --sidebar-primary-foreground: 0 0% 98%;
+        --sidebar-accent: 240 4.8% 95.9%;
+        --sidebar-accent-foreground: 240 5.9% 10%;
+        --sidebar-border: 220 13% 91%;
+        --sidebar-ring: 217.2 91.2% 59.8%;
+    }
+    .dark {
+        --background: 0 0% 3.9%;
+        --foreground: 0 0% 98%;
+        --card: 0 0% 3.9%;
+        --card-foreground: 0 0% 98%;
+        --popover: 0 0% 3.9%;
+        --popover-foreground: 0 0% 98%;
+        --primary: 0 0% 98%;
+        --primary-foreground: 0 0% 9%;
+        --secondary: 0 0% 14.9%;
+        --secondary-foreground: 0 0% 98%;
+        --muted: 0 0% 14.9%;
+        --muted-foreground: 0 0% 63.9%;
+        --accent: 0 0% 14.9%;
+        --accent-foreground: 0 0% 98%;
+        --destructive: 0 62.8% 30.6%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 0 0% 14.9%;
+        --input: 0 0% 14.9%;
+        --ring: 0 0% 83.1%;
+        --chart-1: 220 70% 50%;
+        --chart-2: 160 60% 45%;
+        --chart-3: 30 80% 55%;
+        --chart-4: 280 65% 60%;
+        --chart-5: 340 75% 55%;
+        --sidebar-background: 240 5.9% 10%;
+        --sidebar-foreground: 240 4.8% 95.9%;
+        --sidebar-primary: 224.3 76.3% 48%;
+        --sidebar-primary-foreground: 0 0% 100%;
+        --sidebar-accent: 240 3.7% 15.9%;
+        --sidebar-accent-foreground: 240 4.8% 95.9%;
+        --sidebar-border: 240 3.7% 15.9%;
+        --sidebar-ring: 217.2 91.2% 59.8%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+    .dark body,
+    .light body {
+        @apply block;
+    }
+}
+</file>
+
+<file path="frontend/src/app.tsx">
+"use client"
+
+import { useState, useEffect } from "react"
+import HomeScreen from "./components/homescreen"
+import ChatView from "./components/chatview"
+import Header from "./components/header"
+import Sidebar from "./components/sidebar"
+import { ThemeProvider } from "next-themes"
+import { API, initApi, type ChannelInfo } from "./lib/api"
+import { log } from "./lib/log"
+import { useIsDesktop } from "./hooks/use-media-query"
+
+export default function AppWrapper() {
+  const [api, setApi] = useState<API | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    initApi()
+      .then(setApi)
+      .catch(err => setError(err.toString()))
+  }, [])
+  return (
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <div className="flex h-screen">
+        {!api && (
+          <SplashScreen>
+            {!error && <div className="text-center">Spawning Iroh…<br /><Spinner /></div>}
+            {error && <div>{error}</div>}
+          </SplashScreen>
+        )}
+        {api && <App api={api} />}
+      </div>
+    </ThemeProvider>
+  )
+}
+
+function Spinner() {
+  return (
+    <svg className="inline-block h-5 w-5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+  )
+}
+
+function SplashScreen({ children }: React.PropsWithChildren) {
+  return (
+    <div className="flex flex-col flex-grow">
+      <Header />
+      <div className="flex items-center justify-center">
+        {children}
+      </div>
+    </div>
+  )
+
+}
+
+interface AppProps {
+  api: API
+}
+
+function App({ api }: AppProps) {
+  const [currentView, setCurrentView] = useState<"home" | "chat">("home")
+  const [channels, setChannels] = useState<ChannelInfo[]>([])
+  const [activeChannel, setActiveChannel] = useState<string | null>(null)
+  const [showSidebar, setShowSidebar] = useState(false)
+
+  const joinChannel = async (ticket: string, nickname: string) => {
+    try {
+      const channel = await api.joinChannel(ticket, nickname)
+      setChannels((prevChannels) => [...prevChannels, channel])
+      setCurrentView("chat")
+      setActiveChannel(channel.id)
+      setShowSidebar(true)
+    } catch (error) {
+      log.error("Failed to join channel", error)
+    }
+  }
+
+  const createChannel = async (nickname: string) => {
+    try {
+      const channel = await api.createChannel(nickname)
+      setChannels((prevChannels) => [...prevChannels, channel])
+      setActiveChannel(channel.id)
+      setCurrentView("chat")
+      setShowSidebar(true)
+    } catch (error) {
+      log.error("Failed to create channel", error)
+    }
+  }
+
+  const closeChannel = async (channelId: string) => {
+    try {
+      await api.closeChannel(channelId)
+      setChannels((prevChannels) => prevChannels.filter((channel) => channel.id !== channelId))
+      if (activeChannel === channelId) {
+        setActiveChannel(channels.length > 1 ? channels[0].id : null)
+        if (channels.length === 1) {
+          setCurrentView("home")
+        }
+      }
+    } catch (error) {
+      log.error("Failed to close channel", error)
+    }
+  }
+
+  const handleNewChannel = () => {
+    setCurrentView("home")
+    setShowSidebar(true)
+  }
+
+  const isDesktop = useIsDesktop()
+
+  let title
+  if (activeChannel) {
+    title = '#' + channels.find((c) => c.id === activeChannel)?.name
+  }
+
+  return (
+    <>
+      {isDesktop && (showSidebar) && (
+        <Sidebar
+          channels={channels}
+          activeChannel={activeChannel}
+          onChannelSelect={(channelId) => {
+            setActiveChannel(channelId)
+            setCurrentView("chat")
+          }}
+          onNewChannel={handleNewChannel}
+        />
+      )}
+      <div className="flex flex-col flex-grow">
+        <Header
+          title={title}
+        />
+        {currentView === "home" && (
+          <HomeScreen
+            onJoin={joinChannel}
+            onCreate={createChannel}
+          />
+        )}
+        {currentView === "chat" && activeChannel && (
+          <ChatView api={api} channel={activeChannel} onClose={() => closeChannel(activeChannel)} />
+        )}
+      </div>
+    </>
+  )
+}
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './app.tsx'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+</file>
+
+<file path="frontend/.gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+/dist
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="frontend/components.json">
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "default",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "tailwind.config.ts",
+    "css": "src/app.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "iconLibrary": "lucide"
+}
+</file>
+
+<file path="frontend/index.html">
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Iroh Chat</title>
+        <link href="/src/app.css" rel="stylesheet" />
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "iroh-chat-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build --base='./'",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "build:wasm": "wasm-pack build ../browser-wasm --dev --weak-refs --reference-types -t bundler -d pkg",
+    "build:wasm:release": "wasm-pack build ../browser-wasm --release -t bundler -d pkg"
+  },
+  "dependencies": {
+    "@radix-ui/react-alert-dialog": "^1.1.6",
+    "@radix-ui/react-checkbox": "^1.1.4",
+    "@radix-ui/react-dialog": "^1.1.6",
+    "@radix-ui/react-popover": "^1.1.6",
+    "@radix-ui/react-scroll-area": "^1.2.3",
+    "@radix-ui/react-slot": "^1.1.2",
+    "@radix-ui/react-toggle": "^1.1.2",
+    "@types/react-timeago": "^4.1.7",
+    "autoprefixer": "^10.4.20",
+    "chat-browser": "file:../browser-wasm/pkg",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.454.0",
+    "next-themes": "latest",
+    "react": "^18",
+    "react-dom": "^18",
+    "react-timeago": "^7.2.0",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss-animate": "^1.0.7",
+    "vaul": "^1.1.2",
+    "yet-another-name-generator": "^1.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.7",
+    "@types/node": "^22",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@vitejs/plugin-react": "^4.3.4",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5",
+    "vite": "^6.1.1",
+    "vite-plugin-top-level-await": "^1.5.0",
+    "vite-plugin-wasm": "^3.4.1"
+  }
+}
+</file>
+
+<file path="frontend/postcss.config.mjs">
+/** @type {import('postcss-load-config').Config} */
+const config = {
+  plugins: {
+    tailwindcss: {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="frontend/tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  darkMode: ["class"],
+  content: ["./index.html", "./src/**/*.{ts,tsx}", "*.{js,ts,jsx,tsx,mdx}"],
+  theme: {
+    extend: {
+      colors: {
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+      },
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
+    },
+  },
+  plugins: [require("tailwindcss-animate")],
+};
+</file>
+
+<file path="frontend/tsconfig.app.json">
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="frontend/tsconfig.json">
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+</file>
+
+<file path="frontend/tsconfig.node.json">
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+</file>
+
+<file path="frontend/vite.config.ts">
+import path from "path"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import wasm from "vite-plugin-wasm";
+import topLevelAwait from "vite-plugin-top-level-await";
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [
+    react(),
+    wasm(),
+    topLevelAwait(),
+  ],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+})
+</file>
+
+<file path="shared/src/lib.rs">
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
+
+use anyhow::{Context, Result};
+pub use iroh::NodeId;
+use iroh::{endpoint::RemoteInfo, protocol::Router, PublicKey, SecretKey};
+use iroh_base::{ticket::Ticket, Signature};
+pub use iroh_gossip::proto::TopicId;
+use iroh_gossip::{
+    api::{Event as GossipEvent, GossipSender},
+    net::{Gossip, GOSSIP_ALPN},
+};
+use n0_future::{
+    boxed::BoxStream,
+    task::{self, AbortOnDropHandle},
+    time::{Duration, SystemTime},
+    StreamExt,
+};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex as TokioMutex, Notify};
+use tracing::{debug, info, warn};
+
+pub const TOPIC_PREFIX: &str = "iroh-example-chat/0:";
+pub const PRESENCE_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChatTicket {
+    pub topic_id: TopicId,
+    pub bootstrap: BTreeSet<NodeId>,
+}
+
+impl ChatTicket {
+    pub fn new_random() -> Self {
+        let topic_id = TopicId::from_bytes(rand::random());
+        Self::new(topic_id)
+    }
+
+    pub fn new(topic_id: TopicId) -> Self {
+        Self {
+            topic_id,
+            bootstrap: Default::default(),
+        }
+    }
+    pub fn deserialize(input: &str) -> Result<Self> {
+        <Self as Ticket>::deserialize(input).map_err(Into::into)
+    }
+    pub fn serialize(&self) -> String {
+        <Self as Ticket>::serialize(self)
+    }
+}
+
+impl Ticket for ChatTicket {
+    const KIND: &'static str = "chat";
+
+    fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_stdvec(&self).unwrap()
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, iroh_base::ticket::ParseError> {
+        let ticket = postcard::from_bytes(bytes)?;
+        Ok(ticket)
+    }
+}
+
+pub struct ChatNode {
+    secret_key: SecretKey,
+    router: Router,
+    gossip: Gossip,
+}
+
+impl ChatNode {
+    /// Spawns a gossip node.
+    pub async fn spawn(secret_key: Option<SecretKey>) -> Result<Self> {
+        let secret_key = secret_key.unwrap_or_else(|| SecretKey::generate(rand::rngs::OsRng));
+        let endpoint = iroh::Endpoint::builder()
+            .secret_key(secret_key.clone())
+            .discovery_n0()
+            .alpns(vec![GOSSIP_ALPN.to_vec()])
+            .bind()
+            .await?;
+
+        let node_id = endpoint.node_id();
+        info!("endpoint bound");
+        info!("node id: {node_id:#?}");
+
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        info!("gossip spawned");
+        let router = Router::builder(endpoint)
+            .accept(GOSSIP_ALPN, gossip.clone())
+            .spawn();
+        info!("router spawned");
+        Ok(Self {
+            gossip,
+            router,
+            secret_key,
+        })
+    }
+
+    /// Returns the node id of this node.
+    pub fn node_id(&self) -> NodeId {
+        self.router.endpoint().node_id()
+    }
+
+    /// Returns information about all the remote nodes this [`Endpoint`] knows about.
+    pub fn remote_info(&self) -> Vec<RemoteInfo> {
+        self.router
+            .endpoint()
+            .remote_info_iter()
+            .collect::<Vec<_>>()
+    }
+
+    /// Joins a chat channel from a ticket.
+    ///
+    /// Returns a [`ChatSender`] to send messages or change our nickname
+    /// and a stream of [`Event`] items for incoming messages and other event.s
+    pub async fn join(
+        &self,
+        ticket: &ChatTicket,
+        nickname: String,
+    ) -> Result<(ChatSender, BoxStream<Result<Event>>)> {
+        let topic_id = ticket.topic_id;
+        let bootstrap = ticket.bootstrap.iter().cloned().collect();
+        info!(?bootstrap, "joining {topic_id}");
+        let gossip_topic = self.gossip.subscribe(topic_id, bootstrap).await?;
+        let (sender, receiver) = gossip_topic.split();
+
+        let nickname = Arc::new(Mutex::new(nickname));
+        let trigger_presence = Arc::new(Notify::new());
+
+        // We spawn a task that occasionally sens a Presence message with our nickname.
+        // This allows to track which peers are online currently.
+        let sender = Arc::new(TokioMutex::new(sender));
+        let presence_task = AbortOnDropHandle::new(task::spawn({
+            let secret_key = self.secret_key.clone();
+            let sender = sender.clone();
+            let trigger_presence = trigger_presence.clone();
+            let nickname = nickname.clone();
+
+            async move {
+                loop {
+                    let nickname = nickname.lock().expect("poisened").clone();
+                    let message = Message::Presence { nickname };
+                    debug!("send presence {message:?}");
+                    let signed_message = SignedMessage::sign_and_encode(&secret_key, message)
+                        .expect("failed to encode message");
+                    if let Err(err) = sender.lock().await.broadcast(signed_message.into()).await {
+                        tracing::warn!("presence task failed to broadcast: {err}");
+                        break;
+                    }
+                    n0_future::future::race(
+                        n0_future::time::sleep(PRESENCE_INTERVAL),
+                        trigger_presence.notified(),
+                    )
+                    .await;
+                }
+            }
+        }));
+
+        // We create a stream of events, coming from the gossip topic event receiver.
+        // We'll want to map the events to our own event type, which includes parsing
+        // the messages and verifying the signatures, and trigger presence
+        // once the swarm is joined initially.
+        let receiver = n0_future::stream::try_unfold(receiver, {
+            let trigger_presence = trigger_presence.clone();
+            move |mut receiver| {
+                let trigger_presence = trigger_presence.clone();
+                async move {
+                    loop {
+                        // Store if we were joined before the next event comes in.
+                        let was_joined = receiver.is_joined();
+
+                        // Fetch the next event.
+                        let Some(event) = receiver.try_next().await? else {
+                            return Ok(None);
+                        };
+                        // Convert into our event type. this fails if we receive a message
+                        // that cannot be decoced into our event type. If that is the case,
+                        // we just keep and log the error.
+                        let event: Event = match event.try_into() {
+                            Ok(event) => event,
+                            Err(err) => {
+                                warn!("received invalid message: {err}");
+                                continue;
+                            }
+                        };
+                        // If we just joined, trigger sending our presence message.
+                        if !was_joined && receiver.is_joined() {
+                            trigger_presence.notify_waiters()
+                        };
+
+                        break Ok(Some((event, receiver)));
+                    }
+                }
+            }
+        });
+
+        let sender = ChatSender {
+            secret_key: self.secret_key.clone(),
+            nickname,
+            sender,
+            trigger_presence,
+            _presence_task: Arc::new(presence_task),
+        };
+        Ok((sender, Box::pin(receiver)))
+    }
+
+    pub async fn shutdown(&self) {
+        if let Err(err) = self.router.shutdown().await {
+            warn!("failed to shutdown router cleanly: {err}");
+        }
+        self.router.endpoint().close().await;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatSender {
+    nickname: Arc<Mutex<String>>,
+    secret_key: SecretKey,
+    sender: Arc<TokioMutex<GossipSender>>,
+    trigger_presence: Arc<Notify>,
+    _presence_task: Arc<AbortOnDropHandle<()>>,
+}
+
+impl ChatSender {
+    pub async fn send(&self, text: String) -> Result<()> {
+        let nickname = self.nickname.lock().expect("poisened").clone();
+        let message = Message::Message { text, nickname };
+        let signed_message = SignedMessage::sign_and_encode(&self.secret_key, message)?;
+        self.sender
+            .lock()
+            .await
+            .broadcast(signed_message.into())
+            .await?;
+        Ok(())
+    }
+
+    pub fn set_nickname(&self, name: String) {
+        *self.nickname.lock().expect("poisened") = name;
+        self.trigger_presence.notify_waiters();
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Event {
+    #[serde(rename_all = "camelCase")]
+    Joined {
+        neighbors: Vec<NodeId>,
+    },
+    #[serde(rename_all = "camelCase")]
+    MessageReceived {
+        from: NodeId,
+        text: String,
+        nickname: String,
+        sent_timestamp: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Presence {
+        from: NodeId,
+        nickname: String,
+        sent_timestamp: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    NeighborUp {
+        node_id: NodeId,
+    },
+    #[serde(rename_all = "camelCase")]
+    NeighborDown {
+        node_id: NodeId,
+    },
+    Lagged,
+}
+
+impl TryFrom<GossipEvent> for Event {
+    type Error = anyhow::Error;
+    fn try_from(event: GossipEvent) -> Result<Self, Self::Error> {
+        let converted = match event {
+            GossipEvent::NeighborUp(node_id) => Self::NeighborUp { node_id },
+            GossipEvent::NeighborDown(node_id) => Self::NeighborDown { node_id },
+            GossipEvent::Received(message) => {
+                let message = SignedMessage::verify_and_decode(&message.content)
+                    .context("failed to parse and verify signed message")?;
+                match message.message {
+                    Message::Presence { nickname } => Self::Presence {
+                        from: message.from,
+                        nickname,
+                        sent_timestamp: message.timestamp,
+                    },
+                    Message::Message { text, nickname } => Self::MessageReceived {
+                        from: message.from,
+                        text,
+                        nickname,
+                        sent_timestamp: message.timestamp,
+                    },
+                }
+            }
+            GossipEvent::Lagged => Self::Lagged,
+        };
+        Ok(converted)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SignedMessage {
+    from: PublicKey,
+    data: Vec<u8>,
+    signature: Signature,
+}
+
+impl SignedMessage {
+    pub fn verify_and_decode(bytes: &[u8]) -> Result<ReceivedMessage> {
+        let signed_message: Self = postcard::from_bytes(bytes)?;
+        let key: PublicKey = signed_message.from;
+        key.verify(&signed_message.data, &signed_message.signature)?;
+        let message: WireMessage = postcard::from_bytes(&signed_message.data)?;
+        let WireMessage::VO { timestamp, message } = message;
+        Ok(ReceivedMessage {
+            from: signed_message.from,
+            timestamp,
+            message,
+        })
+    }
+
+    pub fn sign_and_encode(secret_key: &SecretKey, message: Message) -> Result<Vec<u8>> {
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        let wire_message = WireMessage::VO { timestamp, message };
+        let data = postcard::to_stdvec(&wire_message)?;
+        let signature = secret_key.sign(&data);
+        let from: PublicKey = secret_key.public();
+        let signed_message = Self {
+            from,
+            data,
+            signature,
+        };
+        let encoded = postcard::to_stdvec(&signed_message)?;
+        Ok(encoded)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum WireMessage {
+    VO { timestamp: u64, message: Message },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Message {
+    Presence { nickname: String },
+    Message { text: String, nickname: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReceivedMessage {
+    timestamp: u64,
+    from: NodeId,
+    message: Message,
+}
+</file>
+
+<file path="shared/.gitignore">
+/target
+</file>
+
+<file path="shared/Cargo.toml">
+[package]
+name = "chat-shared"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+blake3 = { version = "1", package = "iroh-blake3" }
+hex = "0.4"
+iroh = { workspace = true }
+iroh-base = { workspace = true, default-features = false, features = ["ticket"] }
+iroh-gossip = { workspace = true, default-features = false, features = ["net"] }
+n0-future = "0.1.2"
+postcard = "1.1.1"
+rand = "0.8"
+serde = "1"
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tracing = "0.1"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-nontrapping-float-to-int", "--enable-bulk-memory"]
+</file>
+
+<file path="Cargo.toml">
+[workspace]
+resolver = "2"
+members = ["shared", "cli", "browser-wasm"]
+
+[workspace.dependencies]
+# we define iroh dependencies here to make upgrading easier.
+iroh = { version = "0.91", default-features = false }
+iroh-base = { version = "0.91", default-features = false, features = ["ticket"] }
+iroh-gossip = { version = "0.91", default-features = false, features = ["net"] }
+</file>
+
+<file path="tsconfig.json">
+{
+  "files": [],
+  "references": [{ "path": "./frontend" }]
+}
+</file>
+
+<file path="Makefile.toml">
+# Use cargo-make to run tasks here: https://crates.io/crates/cargo-make
+
+[tasks.deploy]
+workspace = false
+script = '''
+cd frontend
+npm run build:wasm:release
+npm install
+npm run build
+'''
+</file>
+
+<file path="README.md">
+# browser-chat
+
+This is a chat app that runs in both the browser and the command line. It uses [`iroh-gossip`](https://github.com/n0-computer/iroh-gossip/) to send messages between peers sharing a channel.
+
+We automatically deploy this example, you can **[try it out here](https://n0-computer.github.io/iroh-examples/main/browser-chat/index.html)**.
+
+The example has the following parts:
+
+* [**shared**](shared) is a Rust library that exposes a `ChatNode`, which uses iroh and iroh-gossip to power a simple ephemeral gossip chat between peers.
+* [**cli**](cli) uses that library to create a simple command-line chat app.
+* [**browser-wasm**](browser-wasm) is a wrapper around the shared library that uses [`wasm-bindgen`](https://github.com/rustwasm/wasm-bindgen) to export JavaScript bindings.
+* [**frontend**](frontend) is the web app. It is written in [TypeScript](https://www.typescriptlang.org/) and uses [React](https://react.dev/) and [shadcn components](https://ui.shadcn.com/).
+  It is built and bundled with [Vite](https://vite.dev/).
+
+## Web app
+
+Follow the steps below to build and run the browser version of the chat app.
+
+### Requirements
+
+To build the example, you need a Rust toolchain for `wasm32-unknown-unknown`, [`wasm-bindgen`](https://github.com/rustwasm/wasm-bindgen) and [`wasm-pack`](https://github.com/rustwasm/wasm-pack).
+
+```
+rustup target install wasm32-unknown-unknown
+cargo binstall wasm-bindgen-cli wasm-pack
+```
+`cargo binstall` is a nifty little tool that downloads binaries from Github releases matching your system architecture. If you don't have it yet, first [install it](https://github.com/cargo-bins/cargo-binstall?tab=readme-ov-file#quickly).
+
+### Building for development
+
+To build the chat app in development mode, run these commands:
+```
+cd frontend
+npm run build:wasm
+npm install
+npm run dev
+```
+
+And then open [`http://localhost:5173`](http://localhost:5173) in your browser.
+
+Note that you have to run `npm run build:wasm` *before* running `npm install`.
+`build:wasm` is an alias defined in [`frontend/package.json`](frontend/package.json) that builds and packs the [`browser-wasm` crate](browser-wasm) with [`wasm-pack`](https://rustwasm.github.io/wasm-pack/).
+Spelled out:
+
+```
+wasm-pack build ./browser-wasm --dev --weak-refs --reference-types -t bundler -d pkg
+```
+This builds the `browser-wasm` for the `wasm32-unknown-unknown` target, creates the JavaScript bindings with `wasm-bindgen`, and wraps it into an NPM package ready to be used by common frontend bundling tools (like Vite in our chat app frontend).
+
+The frontend package has a `file:` dependency onto the Wasm package created by `wasm-pack`.
+Whenever you change something on the rust side, you need to rebuild the Wasm package with `npm run build:wasm` (or the `wasm-pack` command).
+Likely you will have to restart the Vite dev server afterwards, as the Wasm is not properly picked up by Vite's hot module reloader.
+
+### Building for production
+
+To build for production, run these commands:
+```
+cd frontend
+npm run build:wasm:release
+npm run build
+```
+
+You will find the output (HTML and assets) in the `frontend/dist` folder.
+
+The `build:wasm:release` command is an alias to `wasm-pack` in release mode. We also have a custom profile definition for the release build
+that includes optimizations to reduce the Wasm size (see [`.cargo/config.toml`](browser-wasm/.cargo/config.toml)).
+
+## Command-line app
+
+To run the CLI version of our chat app, simply run `cargo run` from this folder. It will print help text on how to create or join channels.
+</file>
+
+</files>

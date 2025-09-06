@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeSet, str::FromStr};
 
 use anyhow::Result;
 use data_encoding::BASE32_NOPAD;
@@ -9,14 +6,13 @@ use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
 use iroh_gossip::{
-    api::{Event, GossipReceiver, GossipSender},
+    api::GossipSender,
     net::{Gossip, GOSSIP_ALPN},
     proto::TopicId,
 };
-use n0_future::{time::Duration, StreamExt as _};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sshx_core::{rand_alphanumeric, Sid};
+use sshx_core::rand_alphanumeric;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::{prelude::wasm_bindgen, JsError, JsValue};
@@ -182,15 +178,13 @@ impl SshxNode {
         .into_raw();
 
         // Add ourselves to the ticket for sharing
-        let mut share_ticket = ticket;
-        share_ticket
-            .nodes
-            .push(self.0.endpoint.node_addr().initialized().await);
+        let mut share_ticket_nodes = ticket.nodes.clone();
+        share_ticket_nodes.push(self.0.endpoint.node_addr().initialized().await);
 
         let session = Session {
-            topic_id: share_ticket.topic,
-            nodes: share_ticket.nodes.into_iter().collect(),
-            encryption_key: share_ticket.key,
+            topic_id: ticket.topic,
+            nodes: share_ticket_nodes.into_iter().collect(),
+            encryption_key: ticket.key,
             sender: SessionSender(sender),
             receiver,
         };
@@ -222,7 +216,7 @@ impl Session {
     }
 
     pub fn ticket(&self, include_self: bool) -> Result<String, JsError> {
-        let mut ticket = Ticket {
+        let ticket = Ticket {
             topic: self.topic_id,
             nodes: if include_self {
                 self.nodes.iter().cloned().collect()
@@ -250,7 +244,7 @@ pub struct SessionSender(GossipSender);
 
 #[wasm_bindgen]
 impl SessionSender {
-    pub async fn send(&self, data: &[u8]) -> Result<(), JsError> {
+    pub async fn send(&self, data: Vec<u8>) -> Result<(), JsError> {
         self.0.broadcast(data.into()).await.map_err(to_js_err)?;
         Ok(())
     }

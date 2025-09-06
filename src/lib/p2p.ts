@@ -1,4 +1,4 @@
-import init, { WebClient } from '$lib/p2p-pkg';
+import init, { WebClient } from "$lib/p2p-pkg";
 
 export type P2PClientOptions<T> = {
   onMessage(message: T): void;
@@ -17,7 +17,7 @@ export class P2PClient<T, U> {
         // options.onMessage(data as T);
         console.log("message from wasm", data);
       };
-      WebClient.new(ticket, onMessage).then(client => {
+      WebClient.new(ticket, onMessage).then((client) => {
         this.#webClient = client;
       });
     });
