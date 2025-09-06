@@ -21,6 +21,7 @@ sshx-core = { version = "0.4.1", path = "crates/sshx-core" }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
 iroh = "0.91"
+iroh-base = { version = "0.91", features = ["ticket"] }
 iroh-gossip = { version = "0.91", features = ["net"] }
 tonic = { version = "0.12.3", features = ["tls", "tls-webpki-roots"] }
 tonic-build = "0.12.3"

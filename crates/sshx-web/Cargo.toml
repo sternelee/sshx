@@ -1,28 +1,38 @@
 [package]
 name = "sshx-web"
-version = "0.1.0"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+documentation.workspace = true
+keywords.workspace = true
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[patch.crates-io]
-mio = { git = "https://github.com/WasmEdge/mio_wasi" }
-
 [dependencies]
-anyhow = "1.0.75"
-data-encoding = "2.5.0"
+anyhow = "1.0.86"
 console_error_panic_hook = "0.1.7"
-futures-lite = "1.13.0"
-getrandom = { version = "0.2.10", features = ["js"] }
-iroh = { version = "0.91.0", default-features = false }
-iroh-base = { version = "0.91.0", default-features = false, features = ["ticket"] }
-iroh-gossip = { version = "0.91.0", default-features = false }
+data-encoding = "2.5.0"
+futures-lite = "2.3.0"
+getrandom = { version = "0.2", features = ["js"] }
+iroh.workspace = true
+iroh-base = { workspace = true, features = ["ticket"] }
+iroh-gossip = { workspace = true, features = ["net"] }
+n0-future = "0.1.2"
 prost = "0.12.3"
-serde = { version = "1.0.188", features = ["derive"] }
-serde_json = "1.0.107"
-sshx-core = { path = "../sshx-core" }
-wasm-bindgen = "0.2.87"
-wasm-bindgen-futures = "0.4.37"
-web-sys = { version = "0.3.64", features = ["console"] }
-rand = "0.8.5"
+rand = { version = "0.8", features = ["std_rng"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+sshx-core.workspace = true
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber-wasm = "0.1.0"
+wasm-bindgen = "=0.2.100"
+wasm-bindgen-futures = "0.4"
+wasm-streams = "0.4.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["--enable-nontrapping-float-to-int", "--enable-bulk-memory"]
