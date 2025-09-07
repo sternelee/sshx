@@ -16,7 +16,7 @@ use iroh_gossip::{
 };
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sshx_core::{ClientMessage, ServerMessage, NewShell, rand_alphanumeric, Sid};
+use sshx_core::{rand_alphanumeric, ClientMessage, NewShell, ServerMessage, Sid};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration};
@@ -338,7 +338,9 @@ impl Controller {
                 return;
             }
             if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
-                let err = ClientMessage::Error { message: err.to_string() };
+                let err = ClientMessage::Error {
+                    message: err.to_string(),
+                };
                 output_tx.send(err).await.ok();
             }
             output_tx.send(ClientMessage::ClosedShell { id }).await.ok();
