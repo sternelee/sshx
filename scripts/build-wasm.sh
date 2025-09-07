@@ -7,12 +7,12 @@ echo "Building sshx-web WASM package..."
 cd browser
 
 # Build the package
-wasm-pack build --target web --out-dir ../static/sshx-web-pkg --dev
+wasm-pack build --target web --out-dir ../static/pkg --dev
 
 # Copy the types file if needed
-if [ -f "../static/sshx-web-pkg/sshx_web.d.ts" ]; then
-  cp "../static/sshx-web-pkg/sshx_web.d.ts" "../static/sshx-web-pkg/sshx-web-pkg.d.ts"
+if [ -f "../static/pkg/sshx_web.d.ts" ]; then
+  cp "../static/pkg/sshx_web.d.ts" "../static/pkg/sshx.d.ts"
 fi
 
 echo "WASM package built successfully!"
-echo "Files created in static/sshx-web-pkg/"
+echo "Files created in static/pkg/"

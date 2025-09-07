@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, str::FromStr};
 
 use anyhow::Result;
-use data_encoding::BASE32_NOPAD;
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
@@ -11,8 +10,7 @@ use iroh_gossip::{
     proto::TopicId,
 };
 use rand::{rngs::OsRng, RngCore};
-use serde::{Deserialize, Serialize};
-use sshx_core::rand_alphanumeric;
+use sshx_core::{crypto::rand_alphanumeric, ticket::SessionTicket};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::{prelude::wasm_bindgen, JsError, JsValue};
@@ -34,46 +32,6 @@ fn start() {
         .init();
 
     tracing::info!("SSHX WASM module initialized");
-}
-
-/// A ticket that contains the necessary information to join a session.
-#[derive(Debug, Serialize, Deserialize)]
-struct Ticket {
-    /// The gossip topic to join.
-    topic: TopicId,
-    /// The node addresses of the host.
-    nodes: Vec<NodeAddr>,
-    /// The encryption key for the session.
-    key: String,
-}
-
-impl Ticket {
-    /// Deserialize from a slice of bytes to a Ticket.
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).map_err(Into::into)
-    }
-
-    /// Serialize from a `Ticket` to a `Vec` of bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("serde_json::to_vec is infallible")
-    }
-}
-
-impl std::fmt::Display for Ticket {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let mut text = BASE32_NOPAD.encode(&self.to_bytes()[..]);
-        text.make_ascii_lowercase();
-        write!(f, "{}", text)
-    }
-}
-
-impl std::str::FromStr for Ticket {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.split(',').next().unwrap_or(s); // Ignore write password for now
-        let bytes = BASE32_NOPAD.decode(s.to_ascii_uppercase().as_bytes())?;
-        Self::from_bytes(&bytes)
-    }
 }
 
 /// Node for SSH sessions over iroh-gossip
@@ -150,22 +108,22 @@ impl SshxNode {
             bytes
         });
 
-        let ticket = Ticket {
+        let ticket = SessionTicket::new(
             topic,
-            nodes: vec![self.0.endpoint.node_addr().initialized().await],
-            key: rand_alphanumeric(14), // 83.3 bits of entropy
-        };
+            vec![self.0.endpoint.node_addr().initialized().await],
+            rand_alphanumeric(14), // 83.3 bits of entropy
+        );
 
         self.join_inner(ticket).await
     }
 
     /// Joins an SSH session from a ticket.
     pub async fn join(&self, ticket: String) -> Result<Session, JsError> {
-        let ticket = Ticket::from_str(&ticket).map_err(to_js_err)?;
+        let ticket = SessionTicket::from_str(&ticket).map_err(to_js_err)?;
         self.join_inner(ticket).await
     }
 
-    async fn join_inner(&self, ticket: Ticket) -> Result<Session, JsError> {
+    async fn join_inner(&self, ticket: SessionTicket) -> Result<Session, JsError> {
         // Add nodes to address book
         for node in &ticket.nodes {
             self.0
@@ -230,7 +188,7 @@ impl Session {
     }
 
     pub fn ticket(&self, include_self: bool) -> Result<String, JsError> {
-        let ticket = Ticket {
+        let ticket = SessionTicket {
             topic: self.topic_id,
             nodes: if include_self {
                 self.nodes.iter().cloned().collect()
@@ -239,6 +197,7 @@ impl Session {
                 self.nodes.iter().cloned().collect()
             },
             key: self.encryption_key.clone(),
+            write_password: None,
         };
         Ok(ticket.to_string())
     }

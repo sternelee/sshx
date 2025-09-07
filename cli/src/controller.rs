@@ -1,22 +1,23 @@
 //! Network gRPC client allowing server control of terminals.
 
 use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
 
 use anyhow::Result;
-use data_encoding::BASE32_NOPAD;
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
-use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
+use iroh::{Endpoint, SecretKey, Watcher};
 use iroh_gossip::{
     api::{Event, GossipReceiver, GossipSender},
     net::{Gossip, GOSSIP_ALPN},
     proto::TopicId,
 };
-use rand::{rngs::OsRng, RngCore};
-use serde::{Deserialize, Serialize};
-use sshx_core::{rand_alphanumeric, ClientMessage, NewShell, ServerMessage, Sid};
+use rand::rngs::OsRng;
+use sshx_core::{
+    crypto::rand_alphanumeric,
+    events::{ClientMessage, NewShell, ServerMessage},
+    ticket::{utils::generate_topic_id, SessionTicket},
+    Sid,
+};
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration};
@@ -25,45 +26,6 @@ use url::Url;
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
-
-/// A ticket that contains the necessary information to join a session.
-#[derive(Debug, Serialize, Deserialize)]
-struct Ticket {
-    /// The gossip topic to join.
-    topic: TopicId,
-    /// The node addresses of the host.
-    nodes: Vec<NodeAddr>,
-    /// The encryption key for the session.
-    key: String,
-}
-
-impl Ticket {
-    /// Deserialize from a slice of bytes to a Ticket.
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).map_err(Into::into)
-    }
-
-    /// Serialize from a `Ticket` to a `Vec` of bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("serde_json::to_vec is infallible")
-    }
-}
-
-impl fmt::Display for Ticket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut text = BASE32_NOPAD.encode(&self.to_bytes()[..]);
-        text.make_ascii_lowercase();
-        write!(f, "{}", text)
-    }
-}
-
-impl FromStr for Ticket {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = BASE32_NOPAD.decode(s.to_ascii_uppercase().as_bytes())?;
-        Self::from_bytes(&bytes)
-    }
-}
 
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
@@ -145,11 +107,7 @@ impl Controller {
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
 
-        let topic = TopicId::from_bytes({
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            bytes
-        });
+        let topic = generate_topic_id();
 
         let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
 
@@ -170,15 +128,13 @@ impl Controller {
         };
 
         let me = endpoint.node_addr().initialized().await;
-        let ticket = Ticket {
-            topic,
-            nodes: vec![me],
-            key: encryption_key.clone(),
-        };
+        let ticket = SessionTicket::new(topic, vec![me], encryption_key.clone());
         let ticket_str = ticket.to_string();
 
         let write_ticket = if let Some(write_password) = write_password {
-            Some(format!("{},{}", ticket_str, write_password))
+            let mut write_ticket = ticket.clone();
+            write_ticket.write_password = Some(write_password);
+            Some(write_ticket.to_shareable_string(true))
         } else {
             None
         };
