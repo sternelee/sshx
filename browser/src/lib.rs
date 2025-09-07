@@ -66,6 +66,7 @@ impl SshxNode {
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)
             .discovery_n0()
+            .alpns(vec![GOSSIP_ALPN.to_vec()])
             .bind()
             .await
             .map_err(to_js_err)?;
@@ -124,24 +125,43 @@ impl SshxNode {
     }
 
     async fn join_inner(&self, ticket: SessionTicket) -> Result<Session, JsError> {
-        // Add nodes to address book
+        tracing::info!("Joining session with topic: {}", ticket.topic);
+        tracing::debug!("Bootstrap nodes: {:?}", ticket.nodes);
+
+        // Add nodes to address book first
         for node in &ticket.nodes {
+            tracing::debug!("Adding node to address book: {}", node.node_id);
             self.0
                 .endpoint
                 .add_node_addr(node.clone())
                 .map_err(to_js_err)?;
         }
 
-        let node_ids = ticket.nodes.iter().map(|p| p.node_id).collect();
-        let (sender, receiver) = self
+        // Subscribe to the topic with bootstrap nodes
+        let node_ids = ticket.nodes.iter().map(|p| p.node_id).collect::<Vec<_>>();
+        tracing::info!(
+            "Subscribing to topic with {} bootstrap nodes",
+            node_ids.len()
+        );
+
+        let topic_handle = self
             .0
             .gossip
-            .subscribe_and_join(ticket.topic, node_ids)
+            .subscribe(ticket.topic, node_ids)
             .await
-            .map_err(to_js_err)?
-            .split();
+            .map_err(|e| {
+                tracing::error!("Failed to subscribe to gossip topic: {}", e);
+                to_js_err(e)
+            })?;
+
+        tracing::info!("Successfully subscribed to topic");
+        let (sender, receiver) = topic_handle.split();
 
         let receiver = ReadableStream::from_stream(receiver.map(|event| {
+            match &event {
+                Ok(e) => tracing::debug!("Received gossip event: {:?}", e),
+                Err(e) => tracing::error!("Gossip event error: {}", e),
+            }
             event
                 .map_err(|err| JsValue::from_str(&err.to_string()))
                 .map(|event| serde_wasm_bindgen::to_value(&event).unwrap())
@@ -150,7 +170,13 @@ impl SshxNode {
 
         // Add ourselves to the ticket for sharing
         let mut share_ticket_nodes = ticket.nodes.clone();
-        share_ticket_nodes.push(self.0.endpoint.node_addr().initialized().await);
+        let our_addr = self.0.endpoint.node_addr().initialized().await;
+        share_ticket_nodes.push(our_addr.clone());
+
+        tracing::info!(
+            "Session created successfully with our node: {}",
+            our_addr.node_id
+        );
 
         let session = Session {
             topic_id: ticket.topic,

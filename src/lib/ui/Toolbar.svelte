@@ -34,7 +34,6 @@
       <button
         class="icon-button"
         on:click={() => dispatch("create")}
-        disabled={!connected || !hasWriteAccess}
         title={!connected
           ? "Not connected"
           : hasWriteAccess === false // Only show the "No write access" title after confirming read-only mode.
