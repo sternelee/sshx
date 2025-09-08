@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use ansi_term::Color::{Cyan, Fixed, Green};
 use anyhow::Result;
 use clap::Parser;
-use sshx::{controller::Controller, runner::Runner, terminal::get_default_shell};
+use cli::{controller::Controller, runner::Runner, terminal::get_default_shell};
 use tokio::signal;
 use tracing::error;
 

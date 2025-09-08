@@ -27,7 +27,7 @@ prost = "0.13.4"
 rand = "0.8.5"
 serde = { version = "1.0.188", features = ["derive", "rc"] }
 serde_json = "1.0"
-sshx-core = { version = "0.4.1", path = "shared" }
+shared = { version = "0.4.1", path = "shared" }
 tauri = { version = "2" }
 tauri-build = "2"
 tokio = { version = "1.40.0", features = ["full"] }

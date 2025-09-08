@@ -4,7 +4,7 @@ use anyhow::Result;
 use futures_lite::StreamExt;
 use std::collections::HashMap;
 
-use sshx_core::{
+use shared::{
     crypto::rand_alphanumeric,
     events::{ClientMessage, NewShell, ServerMessage},
     p2p::{P2pConfig, P2pNode, P2pSession},

@@ -1,5 +1,5 @@
 [package]
-name = "sshx-core"
+name = "shared"
 version.workspace = true
 authors.workspace = true
 license.workspace = true

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use encoding_rs::{CoderResult, UTF_8};
-use sshx_core::{ClientMessage, TerminalData, Sid};
+use shared::{ClientMessage, Sid, TerminalData};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,

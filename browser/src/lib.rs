@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use futures_lite::StreamExt;
-use sshx_core::{
+use shared::{
     p2p::{P2pConfig, P2pNode, P2pSession, P2pSessionManager},
     ticket::SessionTicket,
 };
