@@ -1,4 +1,4 @@
-import { SshxNode, Session, SessionSender } from "sshx-web";
+import { SshxNode, Session, SessionSender, SessionManager } from "./browser";
 
 // Type definitions for SSHX events
 export interface SshxEvent {
@@ -110,6 +110,10 @@ export class SshxAPI {
     const id = session.id();
     const sender = session.sender;
     const receiver = session.receiver;
+
+    if (!receiver) {
+      throw new Error(`Session ${id} does not have a receiver stream`);
+    }
 
     const state: SessionState = {
       id,
