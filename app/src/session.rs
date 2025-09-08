@@ -1,0 +1,239 @@
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use shared::events::{ClientMessage, ServerMessage, SessionEvent};
+use shared::p2p::{P2pConfig, P2pMessage, P2pNode, P2pSession, P2pSessionManager};
+use shared::ticket::SessionTicket;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_stream::StreamExt;
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub p2p_node: Arc<P2pNode>,
+    pub session_manager: Arc<Mutex<P2pSessionManager>>,
+}
+
+impl AppState {
+    pub async fn new() -> Result<Self> {
+        let config = P2pConfig::default();
+        let p2p_node = P2pNode::new(config).await?;
+
+        Ok(Self {
+            p2p_node: Arc::new(p2p_node),
+            session_manager: Arc::new(Mutex::new(P2pSessionManager::new())),
+        })
+    }
+
+    pub async fn create_session(&self) -> Result<String> {
+        let session = self.p2p_node.create_session().await?;
+        let session_id = session.topic().to_string();
+
+        let mut manager = self.session_manager.lock().await;
+        manager.add_session(session);
+
+        Ok(session_id)
+    }
+
+    pub async fn join_session(&self, ticket: SessionTicket) -> Result<String> {
+        let session = self.p2p_node.join_session(ticket).await?;
+        let session_id = session.topic().to_string();
+
+        let mut manager = self.session_manager.lock().await;
+        manager.add_session(session);
+
+        Ok(session_id)
+    }
+
+    pub async fn get_session(&self, session_id: &str) -> Option<P2pSession> {
+        let manager = self.session_manager.lock().await;
+        manager.get_session(session_id).cloned()
+    }
+
+    pub async fn handle_session_events(&self, session_id: &str) -> Result<()> {
+        let mut manager = self.session_manager.lock().await;
+        if let Some(session) = manager.get_session_mut(session_id) {
+            if let Some(mut event_stream) = session.event_stream() {
+                drop(manager); // Release the lock
+
+                while let Some(event) = event_stream.next().await {
+                    match event {
+                        Ok(gossip_event) => {
+                            // Handle gossip events and convert them to session events
+                            match gossip_event {
+                                iroh_gossip::api::Event::Received { content, .. } => {
+                                    // Try to deserialize the content as a P2pMessage
+                                    if let Ok(p2p_message) = P2pMessage::from_bytes(&content) {
+                                        match p2p_message {
+                                            P2pMessage::Binary(data) => {
+                                                // Handle binary data as terminal data
+                                                self.handle_binary_data(session_id, data).await?;
+                                            }
+                                            P2pMessage::Text(text) => {
+                                                // Handle text messages
+                                                self.handle_text_message(session_id, text).await?;
+                                            }
+                                            P2pMessage::Structured { msg_type, payload } => {
+                                                // Handle structured messages
+                                                self.handle_structured_message(
+                                                    session_id, msg_type, payload,
+                                                )
+                                                .await?;
+                                            }
+                                        }
+                                    }
+                                }
+                                iroh_gossip::api::Event::NeighborUp(node_id) => {
+                                    println!("New neighbor connected: {}", node_id);
+                                }
+                                iroh_gossip::api::Event::NeighborDown(node_id) => {
+                                    println!("Neighbor disconnected: {}", node_id);
+                                }
+                                _ => {
+                                    // Handle other gossip events
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error receiving gossip event: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_binary_data(&self, session_id: &str, data: Vec<u8>) -> Result<()> {
+        // Convert binary data to terminal data event
+        let session_event = SessionEvent::TerminalData(shared::events::TerminalData {
+            id: shared::Sid(1), // Default shell ID for now
+            data,
+            seq: 0, // Sequence number would need to be tracked
+        });
+
+        // Broadcast the event to other components
+        self.broadcast_session_event(session_id, session_event)
+            .await
+    }
+
+    async fn handle_text_message(&self, session_id: &str, text: String) -> Result<()> {
+        // Handle text messages (e.g., chat messages)
+        println!("Received text message in session {}: {}", session_id, text);
+        Ok(())
+    }
+
+    async fn handle_structured_message(
+        &self,
+        session_id: &str,
+        msg_type: String,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        // Handle structured messages based on type
+        match msg_type.as_str() {
+            "client_message" => {
+                if let Ok(client_message) = serde_json::from_slice::<ClientMessage>(&payload) {
+                    self.handle_client_message(session_id, client_message)
+                        .await?;
+                }
+            }
+            "server_message" => {
+                if let Ok(server_message) = serde_json::from_slice::<ServerMessage>(&payload) {
+                    self.handle_server_message(session_id, server_message)
+                        .await?;
+                }
+            }
+            _ => {
+                println!("Unknown structured message type: {}", msg_type);
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_client_message(&self, session_id: &str, message: ClientMessage) -> Result<()> {
+        match message {
+            ClientMessage::Hello { content } => {
+                println!("Client hello in session {}: {}", session_id, content);
+            }
+            ClientMessage::Data(data) => {
+                // Handle terminal data from client
+                let session_event = SessionEvent::TerminalData(data);
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+            ClientMessage::CreatedShell(shell) => {
+                let session_event = SessionEvent::ShellCreated(shell);
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+            ClientMessage::ClosedShell { id } => {
+                let session_event = SessionEvent::ShellClosed { id };
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+            ClientMessage::Pong { timestamp } => {
+                println!("Pong received in session {}: {}", session_id, timestamp);
+            }
+            ClientMessage::Error { message } => {
+                let session_event = SessionEvent::Error { message };
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_server_message(&self, session_id: &str, message: ServerMessage) -> Result<()> {
+        match message {
+            ServerMessage::Input(input) => {
+                // Handle terminal input from server
+                println!(
+                    "Server input received in session {}: {} bytes",
+                    session_id,
+                    input.data.len()
+                );
+            }
+            ServerMessage::CreateShell(shell) => {
+                println!(
+                    "Create shell request in session {}: {:?}",
+                    session_id, shell
+                );
+            }
+            ServerMessage::CloseShell { id } => {
+                println!("Close shell request in session {}: {}", session_id, id);
+            }
+            ServerMessage::Sync(seq_nums) => {
+                println!("Sync request in session {}: {:?}", session_id, seq_nums);
+            }
+            ServerMessage::Resize(size) => {
+                let session_event = SessionEvent::TerminalResize(size);
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+            ServerMessage::Ping { timestamp } => {
+                println!("Ping received in session {}: {}", session_id, timestamp);
+            }
+            ServerMessage::Error { message } => {
+                let session_event = SessionEvent::Error { message };
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn broadcast_session_event(&self, session_id: &str, event: SessionEvent) -> Result<()> {
+        // Convert session event to P2pMessage and broadcast
+        let payload = serde_json::to_vec(&event)?;
+        let p2p_message = P2pMessage::Structured {
+            msg_type: "session_event".to_string(),
+            payload,
+        };
+        let bytes = p2p_message.to_bytes()?;
+
+        let manager = self.session_manager.lock().await;
+        if let Some(session) = manager.get_session(session_id) {
+            session.broadcast(bytes).await?;
+        }
+        Ok(())
+    }
+}

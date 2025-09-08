@@ -42,6 +42,11 @@ export interface SessionInfo {
   ticket: string;
 }
 
+// Check if we're running in a Tauri environment
+const isTauri = () => {
+  return typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+};
+
 // We want to only ever create the API once, therefore we define a module-level
 // singleton that holds the promise to create the API.
 // As promises can be awaited any number of times in JavaScript, this gives us
@@ -54,7 +59,19 @@ export async function initApi() {
 
 async function importAndInitOnce() {
   try {
-    const node = await SshxNode.spawn();
+    let node;
+    
+    if (isTauri()) {
+      // In Tauri environment, we might want to use a different initialization
+      // For now, we'll still use the web version but this is where Tauri-specific
+      // logic would go
+      console.log("Running in Tauri environment");
+      node = await SshxNode.spawn();
+    } else {
+      // Web environment
+      node = await SshxNode.spawn();
+    }
+    
     return new SshxAPI(node);
   } catch (err) {
     console.error("Failed to import or launch sshx", err);
