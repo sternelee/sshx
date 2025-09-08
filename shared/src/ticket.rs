@@ -175,4 +175,3 @@ mod tests {
         assert_eq!(deserialized.write_password, Some(password));
     }
 }
-

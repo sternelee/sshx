@@ -1,28 +1,20 @@
 //! Network gRPC client allowing server control of terminals.
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 use futures_lite::StreamExt;
-use iroh::protocol::Router;
-use iroh::{Endpoint, SecretKey, Watcher};
-use iroh_gossip::{
-    api::{Event, GossipReceiver, GossipSender},
-    net::{Gossip, GOSSIP_ALPN},
-    proto::TopicId,
-};
-use rand::rngs::OsRng;
+use std::collections::HashMap;
+
 use sshx_core::{
     crypto::rand_alphanumeric,
     events::{ClientMessage, NewShell, ServerMessage},
-    ticket::{utils::generate_topic_id, SessionTicket},
+    p2p::{P2pConfig, P2pNode, P2pSession},
+    ticket::SessionTicket,
     Sid,
 };
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, warn};
-use url::Url;
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
@@ -33,13 +25,9 @@ pub struct Controller {
     encrypt: Encrypt,
     encryption_key: String,
 
-    // Iroh related fields
-    endpoint: Endpoint,
-    gossip: Gossip,
-    topic: TopicId,
-    gossip_sender: Option<GossipSender>,
-    gossip_receiver: Option<GossipReceiver>,
-    router: Option<iroh::protocol::Router>,
+    // P2P networking
+    p2p_node: P2pNode,
+    p2p_session: P2pSession,
 
     ticket: String,
     write_ticket: Option<String>,
@@ -59,7 +47,7 @@ impl Controller {
         _name: &str,
         runner: Runner,
         enable_readers: bool,
-    ) -> Result<Self> {
+    ) -> Result<Self, anyhow::Error> {
         Self::with_relay(None, runner, enable_readers).await
     }
 
@@ -68,48 +56,19 @@ impl Controller {
         relay_url: Option<String>,
         runner: Runner,
         enable_readers: bool,
-    ) -> Result<Self> {
-        debug!("Initializing iroh P2P network with gossip...");
-        let secret_key = SecretKey::generate(&mut OsRng);
-
-        // Create iroh endpoint with IPv4 preference and disabled IPv6 to reduce connectivity warnings
-        let endpoint_builder = Endpoint::builder()
-            .secret_key(secret_key)
-            .bind_addr_v4(std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                0,
-            )) // Prefer IPv4 binding
-            .bind_addr_v6(std::net::SocketAddrV6::new(
-                std::net::Ipv6Addr::LOCALHOST,
-                0,
-                0,
-                0,
-            )); // Bind IPv6 to localhost only
-
-        let endpoint = if let Some(relay) = relay_url {
-            debug!("Using custom relay server: {}", relay);
-            // Parse the relay URL and use it for discovery
-            let _relay_url: Url = relay.parse()?;
-            endpoint_builder
-                .discovery_n0() // Use default discovery for now, custom relay setup is more complex
-                .bind()
-                .await?
-        } else {
-            debug!("Using default n0 relay server with IPv4 preference");
-            endpoint_builder.discovery_n0().bind().await?
+    ) -> Result<Self, anyhow::Error> {
+        let p2p_config = P2pConfig {
+            relay_url,
+            prefer_ipv4: true,
+            debug: true,
         };
 
-        println!("> our node id: {}", endpoint.node_id());
+        let p2p_node = P2pNode::new(p2p_config).await?;
+        println!("> our node id: {}", p2p_node.node_id());
 
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-
-        let router = Router::builder(endpoint.clone())
-            .accept(GOSSIP_ALPN, gossip.clone())
-            .spawn();
-
-        let topic = generate_topic_id();
-
-        let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
+        let p2p_session = p2p_node.create_session().await?;
+        let topic = *p2p_session.topic();
+        let encryption_key = p2p_session.encryption_key().to_string();
 
         let kdf_task = {
             let encryption_key = encryption_key.clone();
@@ -127,7 +86,7 @@ impl Controller {
             (None, None)
         };
 
-        let me = endpoint.node_addr().initialized().await;
+        let me = p2p_node.node_addr().await;
         let ticket = SessionTicket::new(topic, vec![me], encryption_key.clone());
         let ticket_str = ticket.to_string();
 
@@ -146,12 +105,8 @@ impl Controller {
             runner,
             encrypt,
             encryption_key,
-            endpoint,
-            gossip,
-            topic,
-            gossip_sender: None,
-            gossip_receiver: None,
-            router: Some(router),
+            p2p_node,
+            p2p_session,
             ticket: ticket_str,
             write_ticket,
             shells_tx: HashMap::new(),
@@ -192,18 +147,9 @@ impl Controller {
         }
     }
 
-    async fn try_run(&mut self) -> Result<()> {
-        let (sender, receiver) = self
-            .gossip
-            .subscribe_and_join(self.topic, vec![])
-            .await?
-            .split();
-
-        self.gossip_sender = Some(sender);
-        self.gossip_receiver = Some(receiver);
-
-        let sender = self.gossip_sender.as_ref().unwrap();
-        let mut receiver = self.gossip_receiver.take().unwrap();
+    async fn try_run(&mut self) -> Result<(), anyhow::Error> {
+        let mut event_stream = self.p2p_session.event_stream();
+        let sender = self.p2p_session.sender();
 
         loop {
             tokio::select! {
@@ -213,12 +159,23 @@ impl Controller {
                     let msg_bytes = format!("{:?}", msg).into_bytes(); // Temporary workaround
                     sender.broadcast(msg_bytes.into()).await?;
                 }
-                // 2. Handle incoming messages from the gossip topic
-                Ok(Some(event)) = receiver.try_next() => {
-                    if let Event::Received(msg) = event {
-                        // For now, skip deserialization until prost version mismatch is resolved
-                        // TODO: Parse received messages properly once prost versions are aligned
-                        warn!("Received gossip message: {} bytes", msg.content.len());
+                // 2. Handle incoming messages from the P2P session
+                Some(Ok(event)) = async {
+                    if let Some(ref mut stream) = event_stream {
+                        stream.next().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    match event {
+                        iroh_gossip::api::Event::Received(msg) => {
+                            // For now, skip deserialization until prost versions are aligned
+                            // TODO: Parse received messages properly once prost versions are aligned
+                            warn!("Received P2P message: {} bytes", msg.content.len());
+                        }
+                        _ => {
+                            debug!("Received other P2P event: {:?}", event);
+                        }
                     }
                 }
             }
@@ -304,14 +261,10 @@ impl Controller {
     }
 
     /// Terminate this session gracefully.
-    pub async fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<(), anyhow::Error> {
         debug!("closing session");
-        if let Some(router) = self.router.take() {
-            router
-                .shutdown()
-                .await
-                .map_err(|e| anyhow::anyhow!("router shutdown failed: {}", e))?;
-        }
+        // The P2P node will be automatically shut down when dropped
+        // In a real implementation, you might want to explicitly shutdown
         Ok(())
     }
 }

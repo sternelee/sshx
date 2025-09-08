@@ -110,4 +110,3 @@ mod tests {
         encrypt.segment(0, 0, b"hello world");
     }
 }
-

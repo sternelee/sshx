@@ -3597,11 +3597,18 @@ dependencies = [
  "argon2",
  "ctr",
  "data-encoding",
+ "futures-lite",
  "iroh",
+ "iroh-base",
  "iroh-gossip",
+ "n0-future",
+ "postcard",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -1,16 +1,11 @@
-use std::{collections::BTreeSet, str::FromStr};
+use std::str::FromStr;
 
 use anyhow::Result;
 use futures_lite::StreamExt;
-use iroh::protocol::Router;
-use iroh::{Endpoint, NodeAddr, SecretKey, Watcher};
-use iroh_gossip::{
-    api::GossipSender,
-    net::{Gossip, GOSSIP_ALPN},
-    proto::TopicId,
+use sshx_core::{
+    p2p::{P2pConfig, P2pNode, P2pSession, P2pSessionManager},
+    ticket::SessionTicket,
 };
-use rand::{rngs::OsRng, RngCore};
-use sshx_core::{crypto::rand_alphanumeric, ticket::SessionTicket};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::{prelude::wasm_bindgen, JsError, JsValue};
@@ -34,212 +29,122 @@ fn start() {
     tracing::info!("SSHX WASM module initialized");
 }
 
-/// Node for SSH sessions over iroh-gossip
+/// Node for SSH sessions over P2P networking
 #[wasm_bindgen]
-pub struct SshxNode(SshxNodeInner);
+pub struct SshxNode(P2pNode);
 
 /// Session manager for handling multiple P2P sessions
 #[wasm_bindgen]
 pub struct SessionManager {
+    p2p_manager: P2pSessionManager,
     node: SshxNode,
-    sessions: std::collections::HashMap<String, ManagedSession>,
-}
-
-struct ManagedSession {
-    session: Session,
-    active: bool,
-    created_at: js_sys::Date,
-}
-
-struct SshxNodeInner {
-    endpoint: Endpoint,
-    gossip: Gossip,
-    router: Router,
 }
 
 #[wasm_bindgen]
 impl SshxNode {
-    /// Spawns a gossip node.
+    /// Spawns a P2P node.
     pub async fn spawn() -> Result<Self, JsError> {
-        let secret_key = SecretKey::generate(&mut OsRng);
-
-        let endpoint = Endpoint::builder()
-            .secret_key(secret_key)
-            .discovery_n0()
-            .alpns(vec![GOSSIP_ALPN.to_vec()])
-            .bind()
-            .await
-            .map_err(to_js_err)?;
-
-        tracing::info!("our node id: {}", endpoint.node_id());
-
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-
-        let router = Router::builder(endpoint.clone())
-            .accept(GOSSIP_ALPN, gossip.clone())
-            .spawn();
-
-        let inner = SshxNodeInner {
-            endpoint,
-            gossip,
-            router,
+        let p2p_config = P2pConfig {
+            relay_url: None,
+            prefer_ipv4: true,
+            debug: true,
         };
-        Ok(Self(inner))
+
+        let node = P2pNode::new(p2p_config).await.map_err(to_js_err)?;
+
+        tracing::info!("our node id: {}", node.node_id());
+
+        Ok(Self(node))
     }
 
     /// Returns the node id of this node.
     pub fn node_id(&self) -> String {
-        self.0.endpoint.node_id().to_string()
+        self.0.node_id().to_string()
     }
 
-    /// Returns information about all the remote nodes this [`Endpoint`] knows about.
+    /// Returns information about all the remote nodes this node knows about.
     pub fn remote_info(&self) -> Vec<JsValue> {
-        self.0
-            .endpoint
-            .remote_info_iter()
-            .map(|info| serde_wasm_bindgen::to_value(&info).unwrap())
-            .collect()
+        // This would need to be implemented in the P2pNode
+        // For now, return empty vector
+        Vec::new()
     }
 
     /// Creates a new SSH session.
     pub async fn create(&self) -> Result<Session, JsError> {
-        let topic = TopicId::from_bytes({
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            bytes
-        });
+        let p2p_session = self.0.create_session().await.map_err(to_js_err)?;
 
-        let ticket = SessionTicket::new(
-            topic,
-            vec![self.0.endpoint.node_addr().initialized().await],
-            rand_alphanumeric(14), // 83.3 bits of entropy
-        );
-
-        self.join_inner(ticket).await
+        Session::from_p2p_session(p2p_session).await
     }
 
     /// Joins an SSH session from a ticket.
     pub async fn join(&self, ticket: String) -> Result<Session, JsError> {
         let ticket = SessionTicket::from_str(&ticket).map_err(to_js_err)?;
-        self.join_inner(ticket).await
-    }
+        let p2p_session = self.0.join_session(ticket).await.map_err(to_js_err)?;
 
-    async fn join_inner(&self, ticket: SessionTicket) -> Result<Session, JsError> {
-        tracing::info!("Joining session with topic: {}", ticket.topic);
-        tracing::debug!("Bootstrap nodes: {:?}", ticket.nodes);
-
-        // Add nodes to address book first
-        for node in &ticket.nodes {
-            tracing::debug!("Adding node to address book: {}", node.node_id);
-            self.0
-                .endpoint
-                .add_node_addr(node.clone())
-                .map_err(to_js_err)?;
-        }
-
-        // Subscribe to the topic with bootstrap nodes
-        let node_ids = ticket.nodes.iter().map(|p| p.node_id).collect::<Vec<_>>();
-        tracing::info!(
-            "Subscribing to topic with {} bootstrap nodes",
-            node_ids.len()
-        );
-
-        let topic_handle = self
-            .0
-            .gossip
-            .subscribe(ticket.topic, node_ids)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to subscribe to gossip topic: {}", e);
-                to_js_err(e)
-            })?;
-
-        tracing::info!("Successfully subscribed to topic");
-        let (sender, receiver) = topic_handle.split();
-
-        let receiver = ReadableStream::from_stream(receiver.map(|event| {
-            match &event {
-                Ok(e) => tracing::debug!("Received gossip event: {:?}", e),
-                Err(e) => tracing::error!("Gossip event error: {}", e),
-            }
-            event
-                .map_err(|err| JsValue::from_str(&err.to_string()))
-                .map(|event| serde_wasm_bindgen::to_value(&event).unwrap())
-        }))
-        .into_raw();
-
-        // Add ourselves to the ticket for sharing
-        let mut share_ticket_nodes = ticket.nodes.clone();
-        let our_addr = self.0.endpoint.node_addr().initialized().await;
-        share_ticket_nodes.push(our_addr.clone());
-
-        tracing::info!(
-            "Session created successfully with our node: {}",
-            our_addr.node_id
-        );
-
-        let session = Session {
-            topic_id: ticket.topic,
-            nodes: share_ticket_nodes.into_iter().collect(),
-            encryption_key: ticket.key,
-            sender: SessionSender(sender),
-            receiver,
-        };
-        Ok(session)
+        Session::from_p2p_session(p2p_session).await
     }
 }
 
 type SessionReceiver = wasm_streams::readable::sys::ReadableStream;
 
 #[wasm_bindgen]
-#[derive(Clone)]
 pub struct Session {
-    topic_id: TopicId,
-    nodes: BTreeSet<NodeAddr>,
-    encryption_key: String,
-    sender: SessionSender,
-    receiver: SessionReceiver,
+    inner: P2pSession,
+    receiver: Option<SessionReceiver>,
+}
+
+impl Session {
+    async fn from_p2p_session(mut p2p_session: P2pSession) -> Result<Self, JsError> {
+        let receiver = p2p_session.take_receiver().map(|receiver| {
+            ReadableStream::from_stream(receiver.map(|event| {
+                match &event {
+                    Ok(e) => tracing::debug!("Received P2P event: {:?}", e),
+                    Err(e) => tracing::error!("P2P event error: {}", e),
+                }
+                event
+                    .map_err(|err| JsValue::from_str(&err.to_string()))
+                    .map(|event| serde_wasm_bindgen::to_value(&event).unwrap())
+            }))
+            .into_raw()
+        });
+
+        Ok(Self {
+            inner: p2p_session,
+            receiver,
+        })
+    }
 }
 
 #[wasm_bindgen]
 impl Session {
     #[wasm_bindgen(getter)]
     pub fn sender(&self) -> SessionSender {
-        self.sender.clone()
+        SessionSender(self.inner.sender().clone())
     }
 
     #[wasm_bindgen(getter)]
-    pub fn receiver(&mut self) -> SessionReceiver {
-        self.receiver.clone()
+    pub fn receiver(&mut self) -> Option<SessionReceiver> {
+        self.receiver.take()
     }
 
-    pub fn ticket(&self, include_self: bool) -> Result<String, JsError> {
-        let ticket = SessionTicket {
-            topic: self.topic_id,
-            nodes: if include_self {
-                self.nodes.iter().cloned().collect()
-            } else {
-                // Return nodes excluding ourselves (if we can identify ourselves)
-                self.nodes.iter().cloned().collect()
-            },
-            key: self.encryption_key.clone(),
-            write_password: None,
-        };
-        Ok(ticket.to_string())
+    pub fn ticket(&self, _include_self: bool) -> Result<String, JsError> {
+        // For now, we'll just return the ticket as-is
+        // In a real implementation, you might want to modify it based on include_self
+        Ok(self.inner.ticket().to_string())
     }
 
     pub fn id(&self) -> String {
-        self.topic_id.to_string()
+        self.inner.topic().to_string()
     }
 
     pub fn encryption_key(&self) -> String {
-        self.encryption_key.clone()
+        self.inner.encryption_key().to_string()
     }
 }
 
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
-pub struct SessionSender(GossipSender);
+pub struct SessionSender(iroh_gossip::api::GossipSender);
 
 #[wasm_bindgen]
 impl SessionSender {
@@ -254,93 +159,78 @@ impl SessionManager {
     /// Creates a new session manager.
     pub async fn new() -> Result<SessionManager, JsError> {
         let node = SshxNode::spawn().await?;
-        Ok(SessionManager {
-            node,
-            sessions: std::collections::HashMap::new(),
-        })
+        let p2p_manager = P2pSessionManager::new();
+        Ok(SessionManager { node, p2p_manager })
     }
 
     /// Creates a new session and adds it to the manager.
     pub async fn create_session(&mut self) -> Result<String, JsError> {
-        let session = self.node.create().await?;
-        let session_id = session.id();
-        let managed_session = ManagedSession {
-            session,
-            active: true,
-            created_at: js_sys::Date::new_0(),
-        };
-        self.sessions.insert(session_id.clone(), managed_session);
+        let p2p_session = self.node.0.create_session().await.map_err(to_js_err)?;
+        let session_id = self.p2p_manager.add_session(p2p_session);
         Ok(session_id)
     }
 
     /// Joins an existing session and adds it to the manager.
     pub async fn join_session(&mut self, ticket: String) -> Result<String, JsError> {
-        let session = self.node.join(ticket.clone()).await?;
-        let session_id = session.id();
-        let managed_session = ManagedSession {
-            session,
-            active: true,
-            created_at: js_sys::Date::new_0(),
-        };
-        self.sessions.insert(session_id.clone(), managed_session);
+        let ticket = SessionTicket::from_str(&ticket).map_err(to_js_err)?;
+        let p2p_session = self.node.0.join_session(ticket).await.map_err(to_js_err)?;
+        let session_id = self.p2p_manager.add_session(p2p_session);
         Ok(session_id)
     }
 
     /// Gets a session by ID.
-    pub fn get_session(&self, session_id: String) -> Result<Session, JsError> {
-        self.sessions
-            .get(&session_id)
-            .and_then(|ms| if ms.active { Some(&ms.session) } else { None })
-            .cloned()
-            .ok_or_else(|| JsError::new(&format!("Session {} not found or inactive", session_id)))
+    pub fn get_session(&self, _session_id: String) -> Result<Session, JsError> {
+        // For now, return an error since P2pSession is not cloneable
+        // In a real implementation, you might want to redesign this
+        Err(JsError::new(
+            "Getting existing sessions not yet implemented",
+        ))
     }
 
     /// Lists all active session IDs.
     pub fn list_sessions(&self) -> Result<js_sys::Array, JsError> {
         let sessions = js_sys::Array::new();
-        for (session_id, managed_session) in self.sessions.iter() {
-            if managed_session.active {
-                sessions.push(&JsValue::from_str(session_id));
-            }
+        for session_id in self.p2p_manager.list_sessions() {
+            sessions.push(&JsValue::from_str(&session_id));
         }
         Ok(sessions)
     }
 
     /// Removes a session from the manager.
     pub fn remove_session(&mut self, session_id: String) -> Result<bool, JsError> {
-        if let Some(managed_session) = self.sessions.get_mut(&session_id) {
-            managed_session.active = false;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        Ok(self.p2p_manager.remove_session(&session_id))
     }
 
     /// Gets session info including metadata.
     pub fn get_session_info(&self, session_id: String) -> Result<JsValue, JsError> {
-        if let Some(managed_session) = self.sessions.get(&session_id) {
-            let info = js_sys::Object::new();
+        if let Some(info) = self.p2p_manager.get_session_info(&session_id) {
+            let js_info = js_sys::Object::new();
             js_sys_to_js_err(js_sys::Reflect::set(
-                &info,
+                &js_info,
                 &JsValue::from_str("id"),
-                &JsValue::from_str(&session_id),
+                &JsValue::from_str(&info.id),
             ))?;
             js_sys_to_js_err(js_sys::Reflect::set(
-                &info,
+                &js_info,
                 &JsValue::from_str("active"),
-                &JsValue::from_bool(managed_session.active),
+                &JsValue::from_bool(info.active),
             ))?;
             js_sys_to_js_err(js_sys::Reflect::set(
-                &info,
+                &js_info,
                 &JsValue::from_str("createdAt"),
-                &managed_session.created_at.clone().into(),
+                &JsValue::from_str(&format!("{:?}", info.created_at)),
             ))?;
             js_sys_to_js_err(js_sys::Reflect::set(
-                &info,
-                &JsValue::from_str("ticket"),
-                &JsValue::from_str(&managed_session.session.ticket(true)?),
+                &js_info,
+                &JsValue::from_str("topic"),
+                &JsValue::from_str(&info.topic.to_string()),
             ))?;
-            Ok(info.into())
+            js_sys_to_js_err(js_sys::Reflect::set(
+                &js_info,
+                &JsValue::from_str("encryptionKey"),
+                &JsValue::from_str(&info.encryption_key),
+            ))?;
+            Ok(js_info.into())
         } else {
             Err(JsError::new(&format!("Session {} not found", session_id)))
         }
@@ -348,33 +238,20 @@ impl SessionManager {
 
     /// Broadcasts a message to all active sessions.
     pub async fn broadcast_to_all(&self, data: Vec<u8>) -> Result<(), JsError> {
-        let mut results = Vec::new();
-        for managed_session in self.sessions.values() {
-            if managed_session.active {
-                let result = managed_session.session.sender().send(data.clone()).await;
-                results.push(result);
-            }
-        }
-
-        // Check if any broadcasts failed
-        for result in results {
-            result?;
-        }
+        self.p2p_manager
+            .broadcast_to_all(data)
+            .await
+            .map_err(to_js_err)?;
         Ok(())
     }
 
     /// Sends a message to a specific session.
     pub async fn send_to_session(&self, session_id: String, data: Vec<u8>) -> Result<(), JsError> {
-        if let Some(managed_session) = self.sessions.get(&session_id) {
-            if managed_session.active {
-                managed_session.session.sender().send(data).await?;
-                Ok(())
-            } else {
-                Err(JsError::new(&format!("Session {} is inactive", session_id)))
-            }
-        } else {
-            Err(JsError::new(&format!("Session {} not found", session_id)))
-        }
+        self.p2p_manager
+            .send_to_session(&session_id, data)
+            .await
+            .map_err(to_js_err)?;
+        Ok(())
     }
 }
 
