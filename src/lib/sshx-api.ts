@@ -128,6 +128,15 @@ export class SshxAPI {
 
     this.sessions.set(id, state);
     this.startEventStream(state);
+    
+    // Notify that connection is established
+    setTimeout(() => {
+      for (const subscriber of state.subscribers) {
+        // Send a hello event to trigger connection handling
+        subscriber({ hello: [Date.now(), "connected"] });
+      }
+    }, 100);
+    
     return id;
   }
 
@@ -261,21 +270,7 @@ export class SshxAPI {
             [serverMessage.data.data],
           ],
         };
-      case "CreateShell":
-        return {
-          shells: [
-            [
-              serverMessage.data.id,
-              {
-                x: serverMessage.data.x,
-                y: serverMessage.data.y,
-                rows: 24,
-                cols: 80,
-              },
-            ],
-          ],
-        };
-      case "CreateShell":
+      case "CreatedShell":
         return {
           shells: [
             [

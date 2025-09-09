@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use shared::{
     crypto::rand_alphanumeric,
-    events::{ClientMessage, NewShell, ServerMessage},
+    events::{ClientMessage, NewShell, ServerMessage, TerminalInput},
     p2p::{P2pConfig, P2pNode, P2pSession},
     ticket::SessionTicket,
     Sid,
@@ -151,36 +151,46 @@ impl Controller {
         let mut event_stream = self.p2p_session.event_stream();
         let sender = self.p2p_session.sender().clone();
 
+        debug!("P2P controller started, waiting for events...");
+
         loop {
             tokio::select! {
-                // 1. Handle outgoing messages from local shells
+                // 1. Handle outgoing messages from local shells to send to browser
                 Some(msg) = self.output_rx.recv() => {
-                    // Serialize ClientMessage to JSON for P2P transmission
-                    let msg_bytes = serde_json::to_vec(&msg).map_err(|e| {
-                        anyhow::anyhow!("Failed to serialize ClientMessage: {}", e)
-                    })?;
-                    sender.broadcast(msg_bytes.into()).await?;
+                    // Send ServerMessage back to browser clients
+                    match serde_json::to_vec(&msg) {
+                        Ok(msg_bytes) => {
+                            if let Err(e) = sender.broadcast(msg_bytes.into()).await {
+                                warn!("Failed to send message to browser: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to serialize ServerMessage: {}", e);
+                        }
+                    }
                 }
-                // 2. Handle incoming messages from the P2P session
+                // 2. Handle incoming messages from browser clients
                 Some(Ok(event)) = async {
+                    debug!("Waiting for P2P event...");
                     if let Some(ref mut stream) = event_stream {
                         stream.next().await
                     } else {
                         std::future::pending().await
                     }
                 } => {
+                    debug!("Received P2P event: {:?}", event);
                     match event {
                         iroh_gossip::api::Event::Received(msg) => {
-                            // Deserialize ServerMessage from JSON
-                            match serde_json::from_slice::<ServerMessage>(&msg.content) {
-                                Ok(server_msg) => {
-                                    debug!("Received P2P message: {:?}", server_msg);
-                                    self.handle_server_message(server_msg).await;
-                                }
-                                Err(e) => {
-                                    warn!("Failed to deserialize P2P message: {} ({} bytes)", e, msg.content.len());
-                                }
-                            }
+                            debug!("Received message from peer: {} bytes", msg.content.len());
+                            debug!("Message content preview: {:?}", &msg.content[..msg.content.len().min(100)]);
+                            // Handle ClientMessage from browser clients
+                            self.handle_p2p_message(&msg.content).await;
+                        }
+                        iroh_gossip::api::Event::NeighborUp(node_id) => {
+                            debug!("Browser client connected: {}", node_id);
+                        }
+                        iroh_gossip::api::Event::NeighborDown(node_id) => {
+                            debug!("Browser client disconnected: {}", node_id);
                         }
                         _ => {
                             debug!("Received other P2P event: {:?}", event);
@@ -191,52 +201,114 @@ impl Controller {
         }
     }
 
-    async fn handle_server_message(&mut self, message: ServerMessage) {
-        match message {
-            ServerMessage::Input(input) => {
-                let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
-                if let Some(sender) = self.shells_tx.get(&input.id) {
-                    sender.send(ShellData::Data(data)).await.ok();
+    /// Handle incoming P2P messages from browser clients
+    async fn handle_p2p_message(&mut self, data: &[u8]) {
+        debug!("handle_p2p_message called with {} bytes", data.len());
+
+        // CLI is the server, it should receive ClientMessage from browser clients
+        match serde_json::from_slice::<ClientMessage>(data) {
+            Ok(client_msg) => {
+                debug!(
+                    "Successfully deserialized ClientMessage from browser: {:?}",
+                    client_msg
+                );
+                self.handle_client_message_from_browser(client_msg).await;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to deserialize P2P message as ClientMessage: {} ({} bytes)",
+                    e,
+                    data.len()
+                );
+
+                // Try to print the raw data as string to see what we're receiving
+                if let Ok(text) = std::str::from_utf8(data) {
+                    debug!("Raw message as text: {}", text);
                 } else {
-                    warn!(%input.id, "received data for non-existing shell");
+                    debug!(
+                        "Raw message data (hex): {:02x?}",
+                        &data[..data.len().min(50)]
+                    );
                 }
-            }
-            ServerMessage::CreateShell(new_shell) => {
-                let id = new_shell.id;
-                let center = (new_shell.x, new_shell.y);
-                if !self.shells_tx.contains_key(&id) {
-                    self.spawn_shell_task(id, center);
-                } else {
-                    warn!(%id, "server asked to create duplicate shell");
-                }
-            }
-            ServerMessage::CloseShell { id } => {
-                self.shells_tx.remove(&id);
-            }
-            ServerMessage::Sync(seqnums) => {
-                for (id, seq) in seqnums.map {
-                    if let Some(sender) = self.shells_tx.get(&id) {
-                        sender.send(ShellData::Sync(seq)).await.ok();
-                    } else {
-                        warn!(%id, "received sequence number for non-existing shell");
-                    }
-                }
-            }
-            ServerMessage::Resize(msg) => {
-                if let Some(sender) = self.shells_tx.get(&msg.id) {
-                    sender.send(ShellData::Size(msg.rows, msg.cols)).await.ok();
-                } else {
-                    warn!(%msg.id, "received resize for non-existing shell");
-                }
-            }
-            ServerMessage::Ping { timestamp } => {
-                let pong = ClientMessage::Pong { timestamp };
-                self.output_tx.send(pong).await.ok();
-            }
-            ServerMessage::Error { message } => {
-                error!(?message, "error received from peer");
             }
         }
+    }
+
+    /// Handle ClientMessage received from browser clients
+    async fn handle_client_message_from_browser(&mut self, message: ClientMessage) {
+        match message {
+            ClientMessage::Hello { content } => {
+                debug!("Browser client connected with hello: {}", content);
+                // Send initial state to the browser client
+                self.send_initial_state_to_browser().await;
+            }
+            ClientMessage::Data(data) => {
+                debug!(
+                    "Received terminal data from browser: {} bytes for shell {}",
+                    data.data.len(),
+                    data.id
+                );
+                // Process terminal data from browser and send to local shell
+                let input_data = TerminalInput {
+                    id: data.id,
+                    data: data.data,
+                    offset: data.seq,
+                };
+
+                // Send to local shell for processing
+                let processed_data =
+                    self.encrypt
+                        .segment(0x200000000, input_data.offset, &input_data.data);
+                if let Some(sender) = self.shells_tx.get(&input_data.id) {
+                    sender.send(ShellData::Data(processed_data)).await.ok();
+                } else {
+                    warn!(%input_data.id, "received data for non-existing shell");
+                }
+            }
+            ClientMessage::CreatedShell(new_shell) => {
+                debug!(
+                    "Browser requested shell creation: {} at ({}, {})",
+                    new_shell.id, new_shell.x, new_shell.y
+                );
+                // Create a new shell task as requested by browser
+                self.spawn_shell_task(new_shell.id, (new_shell.x, new_shell.y));
+            }
+            ClientMessage::ClosedShell { id } => {
+                debug!("Browser requested shell closure: {}", id);
+                // Remove the shell as requested by browser
+                self.shells_tx.remove(&id);
+            }
+            ClientMessage::Pong { timestamp } => {
+                debug!("Received pong from browser: {}", timestamp);
+                // Calculate and log latency if needed
+            }
+            ClientMessage::Error { message } => {
+                warn!("Received error from browser: {}", message);
+                // Handle browser-reported errors
+            }
+        }
+    }
+
+    /// Send initial state to newly connected browser client
+    async fn send_initial_state_to_browser(&mut self) {
+        // Send existing shells information to the browser
+        for (&id, _) in &self.shells_tx {
+            // This would typically send information about existing shells
+            // For now, we'll just create a default shell if none exist
+            if self.shells_tx.is_empty() {
+                self.spawn_shell_task(id, (0, 0));
+                break;
+            }
+        }
+    }
+
+    /// This method is kept for compatibility but should not be used in P2P server mode
+    /// CLI is the server and should only receive ClientMessage from browser clients
+    async fn handle_server_message(&mut self, message: ServerMessage) {
+        warn!(
+            "Received unexpected ServerMessage in P2P server mode: {:?}",
+            message
+        );
     }
 
     /// Entry point to start a new terminal task on the client.
@@ -255,17 +327,27 @@ impl Controller {
                 x: center.0,
                 y: center.1,
             };
+
+            // Notify other clients that this shell was created
             if let Err(err) = output_tx.send(ClientMessage::CreatedShell(new_shell)).await {
                 error!(%id, ?err, "failed to send shell creation message");
                 return;
             }
+
+            // Run the shell and handle any errors
             if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
-                let err = ClientMessage::Error {
+                let err_msg = ClientMessage::Error {
                     message: err.to_string(),
                 };
-                output_tx.send(err).await.ok();
+                if let Err(send_err) = output_tx.send(err_msg).await {
+                    error!(%id, ?send_err, "failed to send error message");
+                }
             }
-            output_tx.send(ClientMessage::ClosedShell { id }).await.ok();
+
+            // Notify other clients that this shell was closed
+            if let Err(err) = output_tx.send(ClientMessage::ClosedShell { id }).await {
+                error!(%id, ?err, "failed to send shell closure message");
+            }
         });
     }
 

@@ -184,6 +184,7 @@
   });
 
   function handleEvent(event: SshxEvent) {
+    console.log("Received event:", event);
     if (event.hello) {
       // For P2P mode, we simulate the hello event
       userId = Math.floor(Math.random() * 1000000);
@@ -200,7 +201,7 @@
 
           // Simulate initial shell creation
           const initialShell = {
-            id: 1,
+            id: 1, // Valid u32 ID
             x: 0,
             y: 0,
             rows: 24,
@@ -290,18 +291,20 @@
         data: { content: command.setName },
       };
     } else if (command.create) {
-      // Send ServerMessage::CreateShell equivalent
+      // Send ClientMessage::CreatedShell to acknowledge shell creation
       const [x, y] = command.create;
+      // Generate a valid u32 ID (max 4,294,967,295)
+      const id = Math.floor(Math.random() * 4294967295);
       clientMessage = {
-        type: "CreateShell",
+        type: "CreatedShell",
         data: {
-          id: Date.now(), // Generate a unique ID
+          id: id,
           x: x,
           y: y,
         },
       };
     } else if (command.close) {
-      // Send ServerMessage::CloseShell equivalent
+      // Send ClientMessage::ClosedShell to acknowledge shell closure
       clientMessage = {
         type: "ClosedShell",
         data: {
@@ -342,8 +345,12 @@
     // For P2P mode, we don't need to authenticate in the traditional way
     // The connection is established through the P2P network
     connected = true;
+    console.log("P2P connected, sending hello message");
 
-    // Send initial hello message with name if available
+    // Send initial hello message
+    sendCommand({ authenticate: true });
+
+    // Send name if available
     if ($settings.name) {
       sendCommand({ setName: $settings.name });
     }
