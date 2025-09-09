@@ -149,14 +149,16 @@ impl Controller {
 
     async fn try_run(&mut self) -> Result<(), anyhow::Error> {
         let mut event_stream = self.p2p_session.event_stream();
-        let sender = self.p2p_session.sender();
+        let sender = self.p2p_session.sender().clone();
 
         loop {
             tokio::select! {
                 // 1. Handle outgoing messages from local shells
                 Some(msg) = self.output_rx.recv() => {
-                    // For now, pass raw message bytes until prost version mismatch is resolved
-                    let msg_bytes = format!("{:?}", msg).into_bytes(); // Temporary workaround
+                    // Serialize ClientMessage to JSON for P2P transmission
+                    let msg_bytes = serde_json::to_vec(&msg).map_err(|e| {
+                        anyhow::anyhow!("Failed to serialize ClientMessage: {}", e)
+                    })?;
                     sender.broadcast(msg_bytes.into()).await?;
                 }
                 // 2. Handle incoming messages from the P2P session
@@ -169,9 +171,16 @@ impl Controller {
                 } => {
                     match event {
                         iroh_gossip::api::Event::Received(msg) => {
-                            // For now, skip deserialization until prost versions are aligned
-                            // TODO: Parse received messages properly once prost versions are aligned
-                            warn!("Received P2P message: {} bytes", msg.content.len());
+                            // Deserialize ServerMessage from JSON
+                            match serde_json::from_slice::<ServerMessage>(&msg.content) {
+                                Ok(server_msg) => {
+                                    debug!("Received P2P message: {:?}", server_msg);
+                                    self.handle_server_message(server_msg).await;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to deserialize P2P message: {} ({} bytes)", e, msg.content.len());
+                                }
+                            }
                         }
                         _ => {
                             debug!("Received other P2P event: {:?}", event);

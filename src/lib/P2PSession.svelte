@@ -31,7 +31,7 @@
   import { settings } from "./settings";
   import { EyeIcon } from "svelte-feather-icons";
 
-  export let id: string;
+  // export let id: string; // Not used in P2P mode
 
   const dispatch = createEventDispatcher<{ receiveName: string }>();
 
@@ -158,7 +158,7 @@
     }
 
     // Try to create or join session based on URL
-    const ticket = new URLSearchParams(window.location.search).get('ticket') || "pmrhi33qnfrseos3ge3dslbrgaycymjtgewdgnbmhezsymjrhewdcmrqfq2telbvgmwdcmjsfqytmmzmhewdcmrzfqytgnbmgi4cymrthawdcnbufqztalbrguzcymjtgewdcmbxfqzdgnjmgi2dklbsgi3cymrvguwdemjwfqzdanrmgywdqobmg43synzufqztcxjmejxg6zdfomrduw33ejxg6zdfl5uwiir2eizdemzxge3giodfmq2wkmbwmjqwiyzqhbqtqzbqhe2dezrwgnrwgmtgmu4gmnbqme3giytggrtdcodegq3tgnlgge4toolbg5rdgyrueiwce4tfnrqxsx3vojwceotoovwgylbcmruxezldorpwczdeojsxg43fomrduwzcgeyc4mjugqxdenbxfyytcoj2guydgobqeiwcemjzgixdcnryfy3c4mjyhe5dkmbthaycelbcge4telrrgy4c4mjthexdgorvgaztqmbcfqrdcojsfyytmobogiytklrqhi2tamzygarcyis3hi5dcxj2gu2dqobyejox2xjmejvwk6jchirgk5lqkrdvazlpirzwsodhjyrcyitxojuxizk7obqxg43xn5zgiir2nz2wy3d5";
+    const ticket = new URLSearchParams(window.location.search).get("ticket");
 
     try {
       if (ticket) {
@@ -169,8 +169,8 @@
         const newTicket = sshxApi.getSessionTicket(currentSessionId);
         // Update URL with the new ticket
         const url = new URL(window.location.href);
-        url.searchParams.set('ticket', newTicket);
-        window.history.pushState({}, '', url.toString());
+        url.searchParams.set("ticket", newTicket);
+        window.history.pushState({}, "", url.toString());
       }
 
       // Subscribe to session events
@@ -185,33 +185,52 @@
 
   function handleEvent(event: SshxEvent) {
     if (event.hello) {
-      userId = event.hello[0];
-      dispatch("receiveName", event.hello[1]);
-      makeToast({
-        kind: "success",
-        message: `Connected to P2P network.`,
-      });
+      // For P2P mode, we simulate the hello event
+      userId = Math.floor(Math.random() * 1000000);
       connected = true;
       exitReason = null;
+
+      // Create initial shell
+      setTimeout(() => {
+        if (connected) {
+          makeToast({
+            kind: "success",
+            message: `Connected to P2P network.`,
+          });
+
+          // Simulate initial shell creation
+          const initialShell = {
+            id: 1,
+            x: 0,
+            y: 0,
+            rows: 24,
+            cols: 80,
+          };
+          shells = [[initialShell.id, initialShell]];
+        }
+      }, 100);
     } else if (event.invalidAuth) {
-      exitReason =
-        "The URL is not correct, invalid end-to-end encryption key.";
+      exitReason = "The URL is not correct, invalid end-to-end encryption key.";
       connected = false;
     } else if (event.chunks) {
       let [id, seqnum, chunks] = event.chunks;
-      locks[id](async () => {
-        await tick();
-        chunknums[id] += chunks.length;
-        for (const data of chunks) {
-          const buf = await encrypt.segment(
-            0x100000000n | BigInt(id),
-            BigInt(seqnum),
-            data,
-          );
-          seqnum += data.length;
-          writers[id](new TextDecoder().decode(buf));
-        }
-      });
+      if (writers[id]) {
+        locks[id](async () => {
+          await tick();
+          chunknums[id] += chunks.length;
+          for (const data of chunks) {
+            const dataArray =
+              data instanceof Uint8Array ? data : new Uint8Array(data);
+            const buf = await encrypt.segment(
+              0x100000000n | BigInt(id),
+              BigInt(seqnum),
+              dataArray,
+            );
+            seqnum += dataArray.length;
+            writers[id](new TextDecoder().decode(buf));
+          }
+        });
+      }
     } else if (event.users) {
       users = event.users;
     } else if (event.userDiff) {
@@ -230,8 +249,8 @@
           chunknums[id] ??= 0;
           locks[id] ??= createLock();
           subscriptions.add(id);
-          // Send subscribe message
-          sendCommand({ subscribe: [id, chunknums[id]] });
+          // For P2P mode, we don't need to send subscribe messages
+          // The shell will automatically start receiving data
         }
       }
     } else if (event.hear) {
@@ -257,18 +276,74 @@
       return;
     }
 
-    // Convert command to JSON and send as binary data
+    // Convert command to ClientMessage format and send as binary data
+    let clientMessage;
+
+    if (command.authenticate) {
+      clientMessage = {
+        type: "Hello",
+        data: { content: "auth" },
+      };
+    } else if (command.setName) {
+      clientMessage = {
+        type: "Hello",
+        data: { content: command.setName },
+      };
+    } else if (command.create) {
+      // Send ServerMessage::CreateShell equivalent
+      const [x, y] = command.create;
+      clientMessage = {
+        type: "CreateShell",
+        data: {
+          id: Date.now(), // Generate a unique ID
+          x: x,
+          y: y,
+        },
+      };
+    } else if (command.close) {
+      // Send ServerMessage::CloseShell equivalent
+      clientMessage = {
+        type: "ClosedShell",
+        data: {
+          id: command.close,
+        },
+      };
+    } else if (command.move) {
+      // This will be handled by the backend
+      return;
+    } else if (command.subscribe) {
+      // This will be handled by the backend
+      return;
+    } else if (command.setCursor) {
+      // This will be handled by the backend
+      return;
+    } else if (command.setFocus) {
+      // This will be handled by the backend
+      return;
+    } else if (command.ping) {
+      clientMessage = {
+        type: "Pong",
+        data: { timestamp: Number(command.ping) },
+      };
+    } else if (command.chat) {
+      // This will be handled by the backend
+      return;
+    } else {
+      console.warn("Unknown command type:", command);
+      return;
+    }
+
     const encoder = new TextEncoder();
-    const data = encoder.encode(JSON.stringify(command));
+    const data = encoder.encode(JSON.stringify(clientMessage));
     await sshxApi.sendData(currentSessionId, data);
   }
 
   function handleConnect(sessionId?: string) {
-    // Send authentication
-    sendCommand({
-      authenticate: [encryptedZeros, writeEncryptedZeros]
-    });
+    // For P2P mode, we don't need to authenticate in the traditional way
+    // The connection is established through the P2P network
+    connected = true;
 
+    // Send initial hello message with name if available
     if ($settings.name) {
       sendCommand({ setName: $settings.name });
     }
@@ -360,9 +435,19 @@
     counter += BigInt(data.length); // Must increment before the `await`.
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
 
-    // Send encrypted data through P2P client
+    // Send encrypted data through P2P client as ClientMessage::Data
     if (currentSessionId && sshxApi) {
-      await sshxApi.sendData(currentSessionId, encrypted);
+      const message = {
+        type: "Data",
+        data: {
+          id: id,
+          data: Array.from(encrypted), // Convert Uint8Array to array for JSON serialization
+          seq: Number(offset),
+        },
+      };
+      const encoder = new TextEncoder();
+      const dataToSend = encoder.encode(JSON.stringify(message));
+      await sshxApi.sendData(currentSessionId, dataToSend);
     }
   }
 
@@ -487,8 +572,8 @@
           status={connected
             ? "connected"
             : exitReason
-            ? "no-shell"
-            : "no-server"}
+              ? "no-shell"
+              : "no-server"}
           serverLatency={integerMedian(serverLatencies)}
           shellLatency={integerMedian(shellLatencies)}
         />

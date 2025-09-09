@@ -37,8 +37,8 @@
         title={!connected
           ? "Not connected"
           : hasWriteAccess === false // Only show the "No write access" title after confirming read-only mode.
-          ? "No write access"
-          : "Create new terminal"}
+            ? "No write access"
+            : "Create new terminal (ServerMessage::CreateShell)"}
       >
         <PlusCircleIcon strokeWidth={1.5} class="p-0.5" />
       </button>

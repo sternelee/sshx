@@ -44,7 +44,9 @@ export interface SessionInfo {
 
 // Check if we're running in a Tauri environment
 const isTauri = () => {
-  return typeof window !== 'undefined' && (window as any).__TAURI__ !== undefined;
+  return (
+    typeof window !== "undefined" && (window as any).__TAURI__ !== undefined
+  );
 };
 
 // We want to only ever create the API once, therefore we define a module-level
@@ -60,7 +62,7 @@ export async function initApi() {
 async function importAndInitOnce() {
   try {
     let node;
-    
+
     if (isTauri()) {
       // In Tauri environment, we might want to use a different initialization
       // For now, we'll still use the web version but this is where Tauri-specific
@@ -71,7 +73,7 @@ async function importAndInitOnce() {
       // Web environment
       node = await SshxNode.spawn();
     }
-    
+
     return new SshxAPI(node);
   } catch (err) {
     console.error("Failed to import or launch sshx", err);
@@ -207,8 +209,23 @@ export class SshxAPI {
   private convertToEvent(jsValue: any): SshxEvent {
     // Handle events from WASM
     try {
+      // Handle raw binary data that might be encoded
+      if (jsValue instanceof Uint8Array) {
+        try {
+          const decoder = new TextDecoder();
+          const messageStr = decoder.decode(jsValue);
+          const parsedMessage = JSON.parse(messageStr);
+
+          // Convert ServerMessage to SshxEvent format
+          return this.serverMessageToSshxEvent(parsedMessage);
+        } catch (e) {
+          console.warn("Received non-JSON binary data:", jsValue);
+          return { error: "Invalid binary message format" };
+        }
+      }
+
+      // Handle direct SshxEvent objects
       if (jsValue && typeof jsValue === "object") {
-        // Try to parse as direct SshxEvent first
         if (
           jsValue.hello ||
           jsValue.invalidAuth ||
@@ -223,19 +240,6 @@ export class SshxAPI {
         ) {
           return jsValue as SshxEvent;
         }
-
-        // Handle raw binary data that might be encoded
-        if (jsValue instanceof Uint8Array) {
-          try {
-            const decoder = new TextDecoder();
-            const messageStr = decoder.decode(jsValue);
-            const parsedMessage = JSON.parse(messageStr);
-            return parsedMessage as SshxEvent;
-          } catch (e) {
-            console.warn("Received non-JSON binary data:", jsValue);
-            return { error: "Invalid binary message format" };
-          }
-        }
       }
 
       // Fallback: return as-is if it already looks like an SshxEvent
@@ -243,6 +247,81 @@ export class SshxAPI {
     } catch (error) {
       console.error("Error converting WASM event:", error, jsValue);
       return { error: "Event conversion failed" };
+    }
+  }
+
+  private serverMessageToSshxEvent(serverMessage: any): SshxEvent {
+    // Convert ServerMessage format to SshxEvent format
+    switch (serverMessage.type) {
+      case "Input":
+        return {
+          chunks: [
+            serverMessage.data.id,
+            serverMessage.data.offset,
+            [serverMessage.data.data],
+          ],
+        };
+      case "CreateShell":
+        return {
+          shells: [
+            [
+              serverMessage.data.id,
+              {
+                x: serverMessage.data.x,
+                y: serverMessage.data.y,
+                rows: 24,
+                cols: 80,
+              },
+            ],
+          ],
+        };
+      case "CreateShell":
+        return {
+          shells: [
+            [
+              serverMessage.data.id,
+              {
+                x: serverMessage.data.x,
+                y: serverMessage.data.y,
+                rows: 24,
+                cols: 80,
+              },
+            ],
+          ],
+        };
+      case "CloseShell":
+        return {
+          shells: [], // Will trigger shell removal
+        };
+      case "ClosedShell":
+        return {
+          shells: [], // Will trigger shell removal
+        };
+      case "Resize":
+        return {
+          shells: [
+            [
+              serverMessage.data.id,
+              {
+                x: 0,
+                y: 0,
+                rows: serverMessage.data.rows,
+                cols: serverMessage.data.cols,
+              },
+            ],
+          ],
+        };
+      case "Ping":
+        return {
+          pong: serverMessage.data.timestamp,
+        };
+      case "Error":
+        return {
+          error: serverMessage.data.message,
+        };
+      default:
+        console.warn("Unknown server message type:", serverMessage.type);
+        return { error: "Unknown message type" };
     }
   }
 }
