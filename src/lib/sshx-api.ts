@@ -1,4 +1,7 @@
 import { SshxNode, Session, SessionSender, SessionManager } from "./browser";
+// import { isTauri, getTauriApi, type TauriAPI } from "./tauri-api";
+
+const isTauri = () => false;
 
 // Type definitions for SSHX events
 export interface SshxEvent {
@@ -42,13 +45,6 @@ export interface SessionInfo {
   ticket: string;
 }
 
-// Check if we're running in a Tauri environment
-const isTauri = () => {
-  return (
-    typeof window !== "undefined" && (window as any).__TAURI__ !== undefined
-  );
-};
-
 // We want to only ever create the API once, therefore we define a module-level
 // singleton that holds the promise to create the API.
 // As promises can be awaited any number of times in JavaScript, this gives us
@@ -61,26 +57,100 @@ export async function initApi() {
 
 async function importAndInitOnce() {
   try {
-    let node;
+    let apiInstance;
 
     if (isTauri()) {
-      // In Tauri environment, we might want to use a different initialization
-      // For now, we'll still use the web version but this is where Tauri-specific
-      // logic would go
-      console.log("Running in Tauri environment");
-      node = await SshxNode.spawn();
+      // In Tauri environment, use the Tauri-specific API
+      console.log("Running in Tauri environment, using Tauri API");
+      // apiInstance = new TauriSshxAPI(getTauriApi());
     } else {
-      // Web environment
-      node = await SshxNode.spawn();
+      // Web environment, use the WASM-based API
+      console.log("Running in web environment, using WASM API");
+      const node = await SshxNode.spawn();
+      apiInstance = new WebSshxAPI(node);
     }
 
-    return new SshxAPI(node);
+    return apiInstance;
   } catch (err) {
     console.error("Failed to import or launch sshx", err);
     throw err;
   }
 }
 
+// Base interface for SSHX API implementations
+export interface SshxAPI {
+  createSession(): Promise<string>;
+  joinSession(ticket: string): Promise<string>;
+  sendData(sessionId: string, data: Uint8Array): Promise<void>;
+  subscribeToEvents(
+    sessionId: string,
+    callback: (event: SshxEvent) => void,
+  ): () => void;
+  getSessionTicket(sessionId: string, includeSelf?: boolean): string;
+  getSessionInfo(sessionId: string): { id: string; connected: boolean } | null;
+  closeSession(sessionId: string): Promise<void>;
+  getNodeId(): string;
+}
+
+// Tauri-specific implementation
+class TauriSshxAPI implements SshxAPI {
+  private tauriApi: TauriAPI;
+
+  constructor(tauriApi: TauriAPI) {
+    this.tauriApi = tauriApi;
+  }
+
+  async createSession(): Promise<string> {
+    return await this.tauriApi.createSession();
+  }
+
+  async joinSession(ticket: string): Promise<string> {
+    return await this.tauriApi.joinSession(ticket);
+  }
+
+  async sendData(sessionId: string, data: Uint8Array): Promise<void> {
+    await this.tauriApi.sendData(sessionId, data);
+  }
+
+  subscribeToEvents(
+    sessionId: string,
+    callback: (event: SshxEvent) => void,
+  ): () => void {
+    return this.tauriApi.subscribeToEvents(sessionId, callback);
+  }
+
+  getSessionTicket(sessionId: string, includeSelf: boolean = true): string {
+    // This is async in Tauri, but sync in the interface for compatibility
+    // We'll need to handle this appropriately in the calling code
+    throw new Error("Use getSessionTicketAsync for Tauri environment");
+  }
+
+  async getSessionTicketAsync(
+    sessionId: string,
+    includeSelf: boolean = true,
+  ): Promise<string> {
+    return await this.tauriApi.getSessionTicket(sessionId, includeSelf);
+  }
+
+  getSessionInfo(sessionId: string): { id: string; connected: boolean } | null {
+    return this.tauriApi.getSessionInfo(sessionId);
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    await this.tauriApi.closeSession(sessionId);
+  }
+
+  getNodeId(): string {
+    // This is async in Tauri, but sync in the interface for compatibility
+    throw new Error("Use getNodeIdAsync for Tauri environment");
+  }
+
+  async getNodeIdAsync(): Promise<string> {
+    return await this.tauriApi.getNodeId();
+  }
+}
+
+// Web-based implementation (existing code)
 type SessionState = {
   id: string;
   session: Session;
@@ -90,7 +160,7 @@ type SessionState = {
   connected: boolean;
 };
 
-export class SshxAPI {
+class WebSshxAPI implements SshxAPI {
   private node: SshxNode;
   private sessions: Map<string, SessionState> = new Map();
 
@@ -128,7 +198,7 @@ export class SshxAPI {
 
     this.sessions.set(id, state);
     this.startEventStream(state);
-    
+
     // Notify that connection is established
     setTimeout(() => {
       for (const subscriber of state.subscribers) {
@@ -136,7 +206,7 @@ export class SshxAPI {
         subscriber({ hello: [Date.now(), "connected"] });
       }
     }, 100);
-    
+
     return id;
   }
 

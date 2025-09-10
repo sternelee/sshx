@@ -15,6 +15,7 @@
   import { initApi } from "./sshx-api";
   import type { SshxAPI } from "./sshx-api";
   import type { SshxEvent, User, Winsize } from "./sshx-api";
+  import { isTauri, getTauriApi } from "./tauri-api";
   import { makeToast } from "./toast";
   import Chat, { type ChatMessage } from "./ui/Chat.svelte";
   import ChooseName from "./ui/ChooseName.svelte";
@@ -30,6 +31,7 @@
   import { arrangeNewTerminal } from "./arrange";
   import { settings } from "./settings";
   import { EyeIcon } from "svelte-feather-icons";
+  import TauriToolbar from "./ui/TauriToolbar.svelte";
 
   // export let id: string; // Not used in P2P mode
 
@@ -165,17 +167,36 @@
         currentSessionId = await sshxApi.joinSession(ticket);
       } else {
         currentSessionId = await sshxApi.createSession();
-        // Get the ticket for sharing
-        const newTicket = sshxApi.getSessionTicket(currentSessionId);
-        // Update URL with the new ticket
-        const url = new URL(window.location.href);
-        url.searchParams.set("ticket", newTicket);
-        window.history.pushState({}, "", url.toString());
+
+        // Get the ticket for sharing - handle both sync and async methods
+        let newTicket: string;
+        if (isTauri() && (sshxApi as any).getSessionTicketAsync) {
+          newTicket = await (sshxApi as any).getSessionTicketAsync(
+            currentSessionId,
+          );
+        } else {
+          newTicket = sshxApi.getSessionTicket(currentSessionId);
+        }
+
+        // Update URL with the new ticket (only in web environment)
+        if (!isTauri()) {
+          const url = new URL(window.location.href);
+          url.searchParams.set("ticket", newTicket);
+          window.history.pushState({}, "", url.toString());
+        }
       }
 
       // Subscribe to session events
       if (currentSessionId) {
         sshxApi.subscribeToEvents(currentSessionId, handleEvent);
+      }
+
+      // Show platform-specific welcome message
+      if (isTauri()) {
+        makeToast({
+          kind: "info",
+          message: "Running in Tauri desktop app mode",
+        });
       }
     } catch (error) {
       console.error("Failed to create/join session:", error);
@@ -541,16 +562,66 @@
   let focused: number[] = [];
   $: setFocus(focused);
 
+  // Helper function to get session ticket for sharing
+  async function getSessionTicketForSharing(): Promise<string> {
+    if (!currentSessionId || !sshxApi) return "";
+
+    try {
+      if (isTauri() && (sshxApi as any).getSessionTicketAsync) {
+        return await (sshxApi as any).getSessionTicketAsync(currentSessionId);
+      } else {
+        return sshxApi.getSessionTicket(currentSessionId);
+      }
+    } catch (error) {
+      console.error("Failed to get session ticket:", error);
+      return "";
+    }
+  }
+
+  let sessionTicketForSharing = "";
+
   // Wait a small amount of time, since blur events happen before focus events.
   const setFocus = debounce((focused: number[]) => {
     sendCommand({ setFocus: focused[0] ?? null });
   }, 20);
+
+  // Update session ticket when session changes
+  $: if (currentSessionId && connected) {
+    getSessionTicketForSharing().then((ticket) => {
+      sessionTicketForSharing = ticket;
+    });
+  }
 </script>
 
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
+{#if isTauri()}
+  <TauriToolbar
+    {currentSessionId}
+    sessionTicket={sessionTicketForSharing}
+    {connected}
+    on:settings={() => (settingsOpen = true)}
+    on:info={() => (showNetworkInfo = !showNetworkInfo)}
+    on:shareSession={(event) => {
+      if (navigator.share) {
+        navigator.share({
+          title: "Join my sshx session",
+          text: "Click to join my collaborative terminal session",
+          url: `${window.location.origin}/p2p?ticket=${encodeURIComponent(event.detail)}`,
+        });
+      } else {
+        makeToast({
+          kind: "info",
+          message: "Session ticket copied to clipboard",
+        });
+      }
+    }}
+  />
+{/if}
+
 <main
   class="p-8"
   class:cursor-nwse-resize={resizing !== -1}
+  class:pt-0={isTauri()}
   on:wheel={(event) => event.preventDefault()}
 >
   <div

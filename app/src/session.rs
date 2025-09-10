@@ -1,7 +1,6 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use shared::events::{ClientMessage, ServerMessage, SessionEvent};
-use shared::p2p::{P2pConfig, P2pMessage, P2pNode, P2pSession, P2pSessionManager};
+use shared::p2p::{P2pConfig, P2pMessage, P2pNode, P2pSessionManager};
 use shared::ticket::SessionTicket;
 use std::sync::Arc;
 use tokio::sync::Mutex;

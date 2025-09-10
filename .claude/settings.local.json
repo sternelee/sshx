@@ -5,7 +5,9 @@
       "Bash(npm run check:*)",
       "Bash(npm run build:*)",
       "Bash(npm run dev:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(curl:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []

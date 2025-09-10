@@ -164,7 +164,7 @@ impl Controller {
         let mut optimization_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         optimization_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        debug!("P2P controller started, waiting for events...");
+        println!("P2P controller started, waiting for events...");
 
         loop {
             tokio::select! {
@@ -196,7 +196,7 @@ impl Controller {
                     match event {
                         iroh_gossip::api::Event::Received(msg) => {
                             debug!("Received message from peer: {} bytes", msg.content.len());
-                            debug!("Message content preview: {:?}", &msg.content[..msg.content.len().min(100)]);
+                            println!("Message content preview: {:?}", &msg.content[..msg.content.len().min(100)]);
                             // Handle ClientMessage from browser clients
                             self.handle_p2p_message(&msg.content).await;
                         }
@@ -262,12 +262,12 @@ impl Controller {
 
     /// Handle incoming P2P messages from browser clients
     async fn handle_p2p_message(&mut self, data: &[u8]) {
-        debug!("handle_p2p_message called with {} bytes", data.len());
+        println!("handle_p2p_message called with {} bytes", data.len());
 
         // CLI is the server, it should receive ClientMessage from browser clients
         match serde_json::from_slice::<ClientMessage>(data) {
             Ok(client_msg) => {
-                debug!(
+                println!(
                     "Successfully deserialized ClientMessage from browser: {:?}",
                     client_msg
                 );
@@ -297,12 +297,12 @@ impl Controller {
     async fn handle_client_message_from_browser(&mut self, message: ClientMessage) {
         match message {
             ClientMessage::Hello { content } => {
-                debug!("Browser client connected with hello: {}", content);
+                println!("Browser client connected with hello: {}", content);
                 // Send initial state to the browser client
                 self.send_initial_state_to_browser().await;
             }
             ClientMessage::Data(data) => {
-                debug!(
+                println!(
                     "Received terminal data from browser: {} bytes for shell {}",
                     data.data.len(),
                     data.id

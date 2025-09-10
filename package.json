@@ -11,11 +11,20 @@
     "lint": "prettier --ignore-path .gitignore --check --plugin-search-dir=. . && eslint --ignore-path .gitignore .",
     "format": "prettier --ignore-path .gitignore --write --plugin-search-dir=. .",
     "build:wasm": "wasm-pack build ./browser --dev --weak-refs --reference-types -t bundler -d pkg",
-    "build:wasm:release": "wasm-pack build ./browser --release -t bundler -d pkg"
+    "build:wasm:release": "wasm-pack build ./browser --release -t bundler -d pkg",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.0.8",
     "@rgossiaux/svelte-headlessui": "^2.0.0",
+    "@tauri-apps/api": ">=2.0.0",
+    "@tauri-apps/plugin-cli": ">=2.0.0",
+    "@tauri-apps/plugin-dialog": ">=2.0.0",
+    "@tauri-apps/plugin-fs": ">=2.0.0",
+    "@tauri-apps/plugin-notification": "~2",
+    "@tauri-apps/plugin-opener": "~2.5.0",
+    "@tauri-apps/plugin-shell": ">=2.0.0",
     "@tldraw/vec": "^1.9.2",
     "@use-gesture/vanilla": "^10.2.27",
     "argon2-browser": "^1.18.0",
@@ -37,6 +46,7 @@
   "devDependencies": {
     "@sveltejs/adapter-static": "^2.0.3",
     "@sveltejs/kit": "^1.24.1",
+    "@tauri-apps/cli": ">=2.0.0",
     "@types/lodash-es": "^4.17.9",
     "@types/node": "^24.3.1",
     "@typescript-eslint/eslint-plugin": "^6.7.0",

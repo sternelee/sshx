@@ -3,19 +3,23 @@
   "version": "0.1.0",
   "identifier": "com.sshx.app",
   "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
-    "devUrl": "http://localhost:1420",
-    "frontendDist": "../src"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173/app",
+    "frontendDist": "../build"
   },
   "app": {
     "windows": [
       {
-        "title": "sshx",
-        "width": 800,
-        "height": 600,
+        "title": "sshx - Secure Collaborative Terminal",
+        "width": 1200,
+        "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true,
+        "url": "/app"
       }
     ],
     "security": {
@@ -25,7 +29,37 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "shortDescription": "A secure web-based, collaborative terminal",
+    "longDescription": "sshx is a secure, fast, and collaborative terminal sharing tool that works seamlessly across different platforms.",
+    "resources": [],
+    "copyright": "Copyright © 2024 sshx contributors",
+    "category": "DeveloperTool",
+    "externalBin": [],
+    "linux": {},
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.13",
+      "exceptionDomain": ""
+    },
+    "windows": {}
+  },
+  "plugins": {
+    "cli": {
+      "description": "A secure collaborative terminal",
+      "args": [
+        {
+          "name": "session",
+          "short": "s",
+          "description": "Join a session with the given ticket",
+          "takesValue": true
+        },
+        {
+          "name": "create",
+          "short": "c",
+          "description": "Create a new session",
+          "takesValue": false
+        }
+      ]
+    }
   }
 }
-
