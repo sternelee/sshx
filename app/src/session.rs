@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     pub p2p_node: Arc<P2pNode>,
     pub session_manager: Arc<Mutex<P2pSessionManager>>,
@@ -44,9 +44,19 @@ impl AppState {
         Ok(session_id)
     }
 
-    pub async fn get_session(&self, session_id: &str) -> Option<P2pSession> {
+    pub async fn get_session(&self, session_id: &str) -> bool {
         let manager = self.session_manager.lock().await;
-        manager.get_session(session_id).cloned()
+        manager.get_session(session_id).is_some()
+    }
+
+    pub async fn send_data_to_session(&self, session_id: &str, data: Vec<u8>) -> Result<()> {
+        let manager = self.session_manager.lock().await;
+        if let Some(session) = manager.get_session(session_id) {
+            session.broadcast(data).await?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Session not found"))
+        }
     }
 
     pub async fn handle_session_events(&self, session_id: &str) -> Result<()> {
@@ -60,9 +70,9 @@ impl AppState {
                         Ok(gossip_event) => {
                             // Handle gossip events and convert them to session events
                             match gossip_event {
-                                iroh_gossip::api::Event::Received { content, .. } => {
+                                iroh_gossip::api::Event::Received(msg) => {
                                     // Try to deserialize the content as a P2pMessage
-                                    if let Ok(p2p_message) = P2pMessage::from_bytes(&content) {
+                                    if let Ok(p2p_message) = P2pMessage::from_bytes(&msg.content) {
                                         match p2p_message {
                                             P2pMessage::Binary(data) => {
                                                 // Handle binary data as terminal data

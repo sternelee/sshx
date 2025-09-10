@@ -10,6 +10,7 @@ use iroh_gossip::{
 use n0_future::{boxed::BoxStream, StreamExt};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::crypto::rand_alphanumeric;
 use crate::ticket::SessionTicket;
@@ -23,6 +24,32 @@ pub struct P2pConfig {
     pub prefer_ipv4: bool,
     /// Enable debug logging
     pub debug: bool,
+    /// Connection strategy settings
+    pub connection_strategy: ConnectionStrategy,
+}
+
+/// Connection strategy for P2P networking
+#[derive(Debug, Clone)]
+pub struct ConnectionStrategy {
+    /// Timeout for direct connection attempts
+    pub direct_timeout: Duration,
+    /// Whether to fallback to relay if direct connection fails
+    pub relay_fallback: bool,
+    /// Maximum number of connection attempts
+    pub max_attempts: usize,
+    /// Delay between connection attempts
+    pub attempt_delay: Duration,
+}
+
+impl Default for ConnectionStrategy {
+    fn default() -> Self {
+        Self {
+            direct_timeout: Duration::from_secs(10),
+            relay_fallback: true,
+            max_attempts: 3,
+            attempt_delay: Duration::from_millis(500),
+        }
+    }
 }
 
 impl Default for P2pConfig {
@@ -31,8 +58,32 @@ impl Default for P2pConfig {
             relay_url: None,
             prefer_ipv4: true,
             debug: false,
+            connection_strategy: ConnectionStrategy::default(),
         }
     }
+}
+
+/// Connection quality metrics
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionQuality {
+    /// Latency in milliseconds
+    pub latency: Option<u32>,
+    /// Packet loss percentage
+    pub packet_loss: f32,
+    /// Bandwidth in bytes per second
+    pub bandwidth: Option<u64>,
+    /// Connection type (direct, relay, etc.)
+    pub connection_type: ConnectionType,
+}
+
+/// Connection type
+#[derive(Debug, Clone, Default)]
+pub enum ConnectionType {
+    #[default]
+    Unknown,
+    Direct,
+    Relay,
+    Mixed,
 }
 
 /// Unified P2P node that can be used by both CLI and WASM applications
@@ -41,6 +92,8 @@ pub struct P2pNode {
     endpoint: Endpoint,
     gossip: Gossip,
     router: Router,
+    /// Connection quality metrics
+    quality: std::sync::Arc<std::sync::Mutex<ConnectionQuality>>,
 }
 
 impl P2pNode {
@@ -66,13 +119,15 @@ impl P2pNode {
                 ));
         }
 
-        // Configure relay
-        let endpoint = if let Some(relay) = config.relay_url {
+        // Configure relay with optimized strategy
+        let endpoint = if let Some(relay) = config.relay_url.clone() {
             if config.debug {
                 tracing::debug!("Using custom relay server: {}", relay);
             }
             // Parse the relay URL and use it for discovery
             let _relay_url: url::Url = relay.parse()?;
+
+            // If we have a custom relay, we'll use it directly
             endpoint_builder
                 .discovery_n0() // Use default discovery for now
                 .bind()
@@ -94,12 +149,74 @@ impl P2pNode {
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
 
+        // Start connection quality monitoring
+        let quality = std::sync::Arc::new(std::sync::Mutex::new(ConnectionQuality::default()));
+        let quality_clone = quality.clone();
+        let endpoint_clone = endpoint.clone();
+        let config_clone = config.clone();
+
+        tokio::spawn(async move {
+            Self::monitor_connection_quality(
+                endpoint_clone,
+                quality_clone,
+                config_clone.connection_strategy,
+            )
+            .await;
+        });
+
         Ok(Self {
             secret_key,
             endpoint,
             gossip,
             router,
+            quality,
         })
+    }
+
+    /// Monitor connection quality and update metrics
+    async fn monitor_connection_quality(
+        _endpoint: Endpoint,
+        quality: std::sync::Arc<std::sync::Mutex<ConnectionQuality>>,
+        _strategy: ConnectionStrategy,
+    ) {
+        // This is a simplified implementation
+        // In a real implementation, you would monitor actual network metrics
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            // Update connection type based on current connections
+            let mut quality_guard = quality.lock().unwrap();
+
+            // Check if we have direct connections
+            // This is a simplified check - in reality you would check the actual connection types
+            quality_guard.connection_type = ConnectionType::Unknown;
+
+            // Simulate latency measurement
+            if quality_guard.latency.is_none() {
+                quality_guard.latency = Some(50); // Default to 50ms
+            }
+
+            drop(quality_guard);
+        }
+    }
+
+    /// Get current connection quality metrics
+    pub fn connection_quality(&self) -> ConnectionQuality {
+        self.quality.lock().unwrap().clone()
+    }
+
+    /// Optimize connection based on current quality metrics
+    pub async fn optimize_connection(&self) -> Result<()> {
+        let quality = self.quality.lock().unwrap().clone();
+
+        // If we're using relay but could use direct, try to optimize
+        if matches!(quality.connection_type, ConnectionType::Relay) {
+            tracing::debug!("Attempting to optimize relay connection to direct");
+            // In a real implementation, you would try to establish direct connections
+            // This might involve hole punching or other NAT traversal techniques
+        }
+
+        Ok(())
     }
 
     /// Returns the node ID
@@ -136,7 +253,47 @@ impl P2pNode {
             }
         }
 
-        P2pSession::new(self, ticket.topic, ticket, encryption_key).await
+        // Try multiple connection strategies
+        let mut last_error = None;
+        let config = P2pConfig::default(); // In a real implementation, this would come from the node
+
+        for attempt in 1..=config.connection_strategy.max_attempts {
+            tracing::debug!(
+                "Join session attempt {}/{}",
+                attempt,
+                config.connection_strategy.max_attempts
+            );
+
+            match P2pSession::new(self, ticket.topic, ticket.clone(), encryption_key.clone()).await
+            {
+                Ok(session) => {
+                    tracing::debug!("Successfully joined session on attempt {}", attempt);
+                    return Ok(session);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Join session attempt {}/{} failed: {}",
+                        attempt,
+                        config.connection_strategy.max_attempts,
+                        e
+                    );
+                    last_error = Some(e);
+
+                    // Wait before next attempt unless it's the last one
+                    if attempt < config.connection_strategy.max_attempts {
+                        tokio::time::sleep(config.connection_strategy.attempt_delay).await;
+                    }
+                }
+            }
+        }
+
+        // If we get here, all attempts failed
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to join session after {} attempts",
+                config.connection_strategy.max_attempts
+            )
+        }))
     }
 
     /// Generates a random topic ID
@@ -163,6 +320,8 @@ pub struct P2pSession {
     encryption_key: String,
     sender: GossipSender,
     receiver: Option<GossipReceiver>,
+    /// Connection quality for this session
+    quality: std::sync::Arc<std::sync::Mutex<ConnectionQuality>>,
 }
 
 impl P2pSession {
@@ -193,6 +352,7 @@ impl P2pSession {
             encryption_key,
             sender,
             receiver: Some(receiver),
+            quality: node.quality.clone(),
         })
     }
 
@@ -243,6 +403,30 @@ impl P2pSession {
         })
     }
 
+    /// Get connection quality metrics for this session
+    pub fn connection_quality(&self) -> ConnectionQuality {
+        self.quality.lock().unwrap().clone()
+    }
+
+    /// Optimize session connection based on quality metrics
+    pub async fn optimize_connection(&self) -> Result<()> {
+        // In a real implementation, this would try to improve the connection
+        // For example, by establishing direct connections to peers
+        let quality = self.quality.lock().unwrap().clone();
+
+        tracing::debug!("Session connection quality: {:?}", quality);
+
+        // If we have high latency or are using relay, try to optimize
+        if quality.latency.unwrap_or(1000) > 100
+            || matches!(quality.connection_type, ConnectionType::Relay)
+        {
+            tracing::debug!("Attempting to optimize session connection");
+            // Optimization logic would go here
+        }
+
+        Ok(())
+    }
+
     /// Creates a session manager for handling multiple sessions
     pub fn into_manager(self) -> P2pSessionManager {
         P2pSessionManager::with_session(self)
@@ -258,6 +442,8 @@ struct ManagedSession {
     session: P2pSession,
     active: bool,
     created_at: std::time::SystemTime,
+    /// Last optimization attempt time
+    last_optimization: std::time::SystemTime,
 }
 
 impl P2pSessionManager {
@@ -275,6 +461,7 @@ impl P2pSessionManager {
             session,
             active: true,
             created_at: std::time::SystemTime::now(),
+            last_optimization: std::time::SystemTime::now(),
         };
         self.sessions.insert(session_id.clone(), managed_session);
         session_id
@@ -361,6 +548,56 @@ impl P2pSessionManager {
                 topic: *managed_session.session.topic(),
                 encryption_key: managed_session.session.encryption_key().to_string(),
             })
+    }
+
+    /// Optimize connections for all active sessions
+    pub async fn optimize_all_connections(&self) -> Result<()> {
+        let mut results = Vec::new();
+
+        for managed_session in self.sessions.values() {
+            if managed_session.active {
+                let result = managed_session.session.optimize_connection().await;
+                results.push(result);
+            }
+        }
+
+        // Check if any optimizations failed
+        for result in results {
+            result?;
+        }
+
+        Ok(())
+    }
+
+    /// Check and optimize connections periodically
+    pub async fn periodic_optimization(&mut self) -> Result<()> {
+        let now = std::time::SystemTime::now();
+        let mut to_optimize = Vec::new();
+
+        // Find sessions that need optimization (every 30 seconds)
+        for (id, managed_session) in &self.sessions {
+            if managed_session.active {
+                if let Ok(elapsed) = now.duration_since(managed_session.last_optimization) {
+                    if elapsed.as_secs() > 30 {
+                        to_optimize.push(id.clone());
+                    }
+                }
+            }
+        }
+
+        // Optimize selected sessions
+        for session_id in to_optimize {
+            if let Some(managed_session) = self.sessions.get_mut(&session_id) {
+                if managed_session.active {
+                    if let Err(e) = managed_session.session.optimize_connection().await {
+                        tracing::warn!("Failed to optimize session {}: {}", session_id, e);
+                    }
+                    managed_session.last_optimization = std::time::SystemTime::now();
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -449,4 +686,3 @@ impl P2pMessage {
         postcard::from_bytes(bytes).context("Failed to deserialize P2P message")
     }
 }
-

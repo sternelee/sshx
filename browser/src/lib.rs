@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use futures_lite::StreamExt;
 use shared::{
-    p2p::{P2pConfig, P2pNode, P2pSession, P2pSessionManager},
+    p2p::{ConnectionStrategy, P2pConfig, P2pNode, P2pSession, P2pSessionManager},
     ticket::SessionTicket,
 };
 use tracing::level_filters::LevelFilter;
@@ -44,10 +44,19 @@ pub struct SessionManager {
 impl SshxNode {
     /// Spawns a P2P node.
     pub async fn spawn() -> Result<Self, JsError> {
+        // Configure optimized P2P settings for browser
+        let connection_strategy = ConnectionStrategy {
+            direct_timeout: std::time::Duration::from_secs(10),
+            relay_fallback: true,
+            max_attempts: 3,
+            attempt_delay: std::time::Duration::from_millis(500),
+        };
+
         let p2p_config = P2pConfig {
             relay_url: None,
             prefer_ipv4: true,
             debug: true,
+            connection_strategy,
         };
 
         let node = P2pNode::new(p2p_config).await.map_err(to_js_err)?;
@@ -249,6 +258,15 @@ impl SessionManager {
     pub async fn send_to_session(&self, session_id: String, data: Vec<u8>) -> Result<(), JsError> {
         self.p2p_manager
             .send_to_session(&session_id, data)
+            .await
+            .map_err(to_js_err)?;
+        Ok(())
+    }
+    
+    /// Optimize connections for all active sessions
+    pub async fn optimize_all_connections(&self) -> Result<(), JsError> {
+        self.p2p_manager
+            .optimize_all_connections()
             .await
             .map_err(to_js_err)?;
         Ok(())

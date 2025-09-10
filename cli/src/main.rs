@@ -13,7 +13,7 @@ use tracing::error;
 struct Args {
     /// Address of the remote sshx server.
     #[clap(long, default_value = "https://sshx.io", env = "SSHX_SERVER")]
-    server: String,
+    server: Option<String>,
 
     /// Local shell command to run in the terminal.
     #[clap(long)]
@@ -90,7 +90,7 @@ async fn start(args: Args) -> Result<()> {
     });
 
     let runner = Runner::Shell(shell.clone());
-    let mut controller = Controller::new(&args.server, &name, runner, args.enable_readers).await?;
+    let mut controller = Controller::new(args.server, &name, runner, args.enable_readers).await?;
     if args.quiet {
         if let Some(write_url) = controller.write_url() {
             println!("{}", write_url);

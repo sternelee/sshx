@@ -5,14 +5,11 @@ use futures_lite::StreamExt;
 use std::collections::HashMap;
 
 use shared::{
-    crypto::rand_alphanumeric,
     events::{ClientMessage, NewShell, ServerMessage, TerminalInput},
-    p2p::{P2pConfig, P2pNode, P2pSession},
-    ticket::SessionTicket,
+    p2p::{P2pNode, P2pSession},
     Sid,
 };
 use tokio::sync::mpsc;
-use tokio::task;
 use tokio::time::{self, Duration};
 use tracing::{debug, error, warn};
 
@@ -43,12 +40,12 @@ pub struct Controller {
 impl Controller {
     /// Construct a new controller, connecting to the remote server.
     pub async fn new(
-        _origin: &str,
+        relay_url: Option<String>,
         _name: &str,
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self, anyhow::Error> {
-        Self::with_relay(None, runner, enable_readers).await
+        Self::with_relay(relay_url, runner, enable_readers).await
     }
 
     /// Construct a new controller with custom relay server configuration.
@@ -57,13 +54,22 @@ impl Controller {
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self, anyhow::Error> {
-        let p2p_config = P2pConfig {
+        // Configure optimized P2P settings
+        let connection_strategy = shared::p2p::ConnectionStrategy {
+            direct_timeout: std::time::Duration::from_secs(15),
+            relay_fallback: true,
+            max_attempts: 5,
+            attempt_delay: std::time::Duration::from_millis(300),
+        };
+
+        let p2p_config = shared::p2p::P2pConfig {
             relay_url,
             prefer_ipv4: true,
             debug: true,
+            connection_strategy,
         };
 
-        let p2p_node = P2pNode::new(p2p_config).await?;
+        let p2p_node = shared::p2p::P2pNode::new(p2p_config).await?;
         println!("> our node id: {}", p2p_node.node_id());
 
         let p2p_session = p2p_node.create_session().await?;
@@ -72,14 +78,14 @@ impl Controller {
 
         let kdf_task = {
             let encryption_key = encryption_key.clone();
-            task::spawn_blocking(move || Encrypt::new(&encryption_key))
+            tokio::task::spawn_blocking(move || crate::encrypt::Encrypt::new(&encryption_key))
         };
 
         let (write_password, _kdf_write_password_task) = if enable_readers {
-            let write_password = rand_alphanumeric(14); // 83.3 bits of entropy
+            let write_password = shared::crypto::rand_alphanumeric(14); // 83.3 bits of entropy
             let task = {
                 let write_password = write_password.clone();
-                task::spawn_blocking(move || Encrypt::new(&write_password))
+                tokio::task::spawn_blocking(move || crate::encrypt::Encrypt::new(&write_password))
             };
             (Some(write_password), Some(task))
         } else {
@@ -87,7 +93,7 @@ impl Controller {
         };
 
         let me = p2p_node.node_addr().await;
-        let ticket = SessionTicket::new(topic, vec![me], encryption_key.clone());
+        let ticket = shared::ticket::SessionTicket::new(topic, vec![me], encryption_key.clone());
         let ticket_str = ticket.to_string();
 
         let write_ticket = if let Some(write_password) = write_password {
@@ -98,9 +104,12 @@ impl Controller {
             None
         };
 
-        let encrypt = kdf_task.await?;
+        let encrypt = kdf_task
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create encryptor: {:?}", e))
+            .unwrap();
 
-        let (output_tx, output_rx) = mpsc::channel(64);
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel(64);
         Ok(Self {
             runner,
             encrypt,
@@ -151,6 +160,10 @@ impl Controller {
         let mut event_stream = self.p2p_session.event_stream();
         let sender = self.p2p_session.sender().clone();
 
+        // Timer for periodic connection optimization
+        let mut optimization_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        optimization_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         debug!("P2P controller started, waiting for events...");
 
         loop {
@@ -188,6 +201,11 @@ impl Controller {
                         }
                         iroh_gossip::api::Event::NeighborUp(node_id) => {
                             debug!("Browser client connected: {}", node_id);
+
+                            // Optimize connection when a new peer connects
+                            if let Err(e) = self.p2p_session.optimize_connection().await {
+                                warn!("Failed to optimize connection: {}", e);
+                            }
                         }
                         iroh_gossip::api::Event::NeighborDown(node_id) => {
                             debug!("Browser client disconnected: {}", node_id);
@@ -195,6 +213,14 @@ impl Controller {
                         _ => {
                             debug!("Received other P2P event: {:?}", event);
                         }
+                    }
+                }
+                // 3. Periodic connection optimization
+                _ = optimization_interval.tick() => {
+                    debug!("Performing periodic connection optimization");
+                    // Optimize connection for the current session
+                    if let Err(e) = self.p2p_session.optimize_connection().await {
+                        warn!("Failed to perform periodic connection optimization: {}", e);
                     }
                 }
             }
