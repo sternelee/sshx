@@ -12,6 +12,10 @@ export interface SshxEvent {
   shellLatency?: number | bigint;
   pong?: number | bigint;
   error?: string;
+  shellCreated?: { id: number; x: number; y: number };
+  shellClosed?: { id: number };
+  shellList?: { shells: Array<{ id: number; x: number; y: number; active: boolean; createdAt?: number }>; count: number };
+  shellResized?: { id: number; rows: number; cols: number };
 }
 
 export interface User {
@@ -262,49 +266,52 @@ export class SshxAPI {
   private serverMessageToSshxEvent(serverMessage: any): SshxEvent {
     // Convert ServerMessage format to SshxEvent format
     switch (serverMessage.type) {
-      case "Input":
+      case "Hello":
+        return {
+          hello: [Date.now(), serverMessage.data.token || "connected"],
+        };
+      case "Data":
         return {
           chunks: [
             serverMessage.data.id,
-            serverMessage.data.offset,
+            serverMessage.data.seq,
             [serverMessage.data.data],
           ],
         };
-      case "CreatedShell":
+      case "ShellCreated":
         return {
-          shells: [
-            [
-              serverMessage.data.id,
-              {
-                x: serverMessage.data.x,
-                y: serverMessage.data.y,
-                rows: 24,
-                cols: 80,
-              },
-            ],
-          ],
+          shellCreated: {
+            id: serverMessage.data.id,
+            x: serverMessage.data.x,
+            y: serverMessage.data.y,
+          },
         };
-      case "CloseShell":
+      case "ShellClosed":
         return {
-          shells: [], // Will trigger shell removal
+          shellClosed: {
+            id: serverMessage.data.id,
+          },
         };
-      case "ClosedShell":
+      case "ShellList":
         return {
-          shells: [], // Will trigger shell removal
+          shellList: {
+            shells: serverMessage.data.shells.map((shell: any) => ({
+              id: shell.id,
+              x: shell.x,
+              y: shell.y,
+              active: shell.active,
+              createdAt: shell.created_at,
+            })),
+            count: serverMessage.data.count,
+          },
         };
-      case "Resize":
+      case "ShellResized":
         return {
-          shells: [
-            [
-              serverMessage.data.id,
-              {
-                x: 0,
-                y: 0,
-                rows: serverMessage.data.rows,
-                cols: serverMessage.data.cols,
-              },
-            ],
-          ],
+          shellResized: {
+            id: serverMessage.data.id,
+            rows: serverMessage.data.rows,
+            cols: serverMessage.data.cols,
+          },
         };
       case "Ping":
         return {

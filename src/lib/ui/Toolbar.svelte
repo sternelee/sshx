@@ -5,6 +5,7 @@
     PlusCircleIcon,
     SettingsIcon,
     WifiIcon,
+    ListIcon,
   } from "svelte-feather-icons";
 
   import logo from "$lib/assets/logo.svg";
@@ -18,6 +19,7 @@
     chat: void;
     settings: void;
     networkInfo: void;
+    listShells: void;
   }>();
 </script>
 
@@ -41,6 +43,15 @@
             : "Create new terminal (ServerMessage::CreateShell)"}
       >
         <PlusCircleIcon strokeWidth={1.5} class="p-0.5" />
+      </button>
+      <button
+        class="icon-button"
+        on:click={() => dispatch("listShells")}
+        title={!connected
+          ? "Not connected"
+          : "List active terminals"}
+      >
+        <ListIcon strokeWidth={1.5} class="p-0.5" />
       </button>
       <button class="icon-button" on:click={() => dispatch("chat")}>
         <MessageSquareIcon strokeWidth={1.5} class="p-0.5" />

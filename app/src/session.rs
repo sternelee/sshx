@@ -1,7 +1,7 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use shared::events::{ClientMessage, ServerMessage, SessionEvent};
-use shared::p2p::{P2pConfig, P2pMessage, P2pNode, P2pSession, P2pSessionManager};
+use shared::events::{ClientMessage, NewShell, ServerMessage, SessionEvent, TerminalData};
+use shared::Sid;
+use shared::p2p::{P2pConfig, P2pMessage, P2pNode, P2pSessionManager};
 use shared::ticket::SessionTicket;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -115,8 +115,8 @@ impl AppState {
 
     async fn handle_binary_data(&self, session_id: &str, data: Vec<u8>) -> Result<()> {
         // Convert binary data to terminal data event
-        let session_event = SessionEvent::TerminalData(shared::events::TerminalData {
-            id: shared::Sid(1), // Default shell ID for now
+        let session_event = SessionEvent::TerminalData(TerminalData {
+            id: Sid(1), // Default shell ID for now
             data,
             seq: 0, // Sequence number would need to be tracked
         });
@@ -164,19 +164,36 @@ impl AppState {
             ClientMessage::Hello { content } => {
                 println!("Client hello in session {}: {}", session_id, content);
             }
-            ClientMessage::Data(data) => {
+            ClientMessage::Input(data) => {
                 // Handle terminal data from client
-                let session_event = SessionEvent::TerminalData(data);
+                // Convert TerminalInput to TerminalData for SessionEvent
+                let terminal_data = TerminalData {
+                    id: data.id,
+                    data: data.data.to_vec(),
+                    seq: data.offset,
+                };
+                let session_event = SessionEvent::TerminalData(terminal_data);
                 self.broadcast_session_event(session_id, session_event)
                     .await?;
             }
-            ClientMessage::CreatedShell(shell) => {
-                let session_event = SessionEvent::ShellCreated(shell);
+            ClientMessage::CreateShellRequest { x, y } => {
+                let new_shell = NewShell { id: Sid(0), x, y };
+                let session_event = SessionEvent::ShellCreated(new_shell);
                 self.broadcast_session_event(session_id, session_event)
                     .await?;
             }
-            ClientMessage::ClosedShell { id } => {
+            ClientMessage::CloseShellRequest { id } => {
                 let session_event = SessionEvent::ShellClosed { id };
+                self.broadcast_session_event(session_id, session_event)
+                    .await?;
+            }
+            ClientMessage::ListShellRequest => {
+                // Handle shell list request
+                println!("Shell list request received in session {}", session_id);
+            }
+            ClientMessage::ResizeRequest(size) => {
+                // Handle terminal resize request
+                let session_event = SessionEvent::TerminalResize(size);
                 self.broadcast_session_event(session_id, session_event)
                     .await?;
             }
@@ -194,27 +211,36 @@ impl AppState {
 
     async fn handle_server_message(&self, session_id: &str, message: ServerMessage) -> Result<()> {
         match message {
-            ServerMessage::Input(input) => {
-                // Handle terminal input from server
+            ServerMessage::Hello { user_id, token } => {
+                println!("Hello received in session {}: user_id={}, token={}", session_id, user_id, token);
+            }
+            ServerMessage::Data(data) => {
+                // Handle terminal data from server
                 println!(
-                    "Server input received in session {}: {} bytes",
+                    "Server data received in session {}: {} bytes",
                     session_id,
-                    input.data.len()
+                    data.data.len()
                 );
             }
-            ServerMessage::CreateShell(shell) => {
+            ServerMessage::ShellCreated(shell) => {
                 println!(
-                    "Create shell request in session {}: {:?}",
+                    "Shell created in session {}: {:?}",
                     session_id, shell
                 );
             }
-            ServerMessage::CloseShell { id } => {
-                println!("Close shell request in session {}: {}", session_id, id);
+            ServerMessage::ShellClosed { id } => {
+                println!("Shell closed in session {}: {}", session_id, id);
+            }
+            ServerMessage::ShellList(shell_list) => {
+                println!(
+                    "Shell list received in session {}: {} shells",
+                    session_id, shell_list.count
+                );
             }
             ServerMessage::Sync(seq_nums) => {
                 println!("Sync request in session {}: {:?}", session_id, seq_nums);
             }
-            ServerMessage::Resize(size) => {
+            ServerMessage::ShellResized(size) => {
                 let session_event = SessionEvent::TerminalResize(size);
                 self.broadcast_session_event(session_id, session_event)
                     .await?;

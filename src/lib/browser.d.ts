@@ -80,6 +80,10 @@ export class SessionManager {
    * Sends a message to a specific session.
    */
   send_to_session(session_id: string, data: Uint8Array): Promise<void>;
+  /**
+   * Optimize connections for all active sessions
+   */
+  optimize_all_connections(): Promise<void>;
 }
 export class SessionSender {
   private constructor();

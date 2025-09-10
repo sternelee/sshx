@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use encoding_rs::{CoderResult, UTF_8};
-use shared::{ClientMessage, Sid, TerminalData};
+use shared::{ClientMessage, Sid, TerminalInput};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
@@ -118,12 +118,12 @@ async fn shell_task(
                 (content_offset + start) as u64,
                 &content.as_bytes()[start..end],
             );
-            let data = TerminalData {
+            let data = TerminalInput {
                 id,
                 data: data.into(),
-                seq: (content_offset + start) as u64,
+                offset: (content_offset + start) as u64,
             };
-            output_tx.send(ClientMessage::Data(data)).await?;
+            output_tx.send(ClientMessage::Input(data)).await?;
             seq = content_offset + end;
             seq_outdated = 0;
         }
@@ -157,14 +157,14 @@ async fn echo_task(
         match item {
             ShellData::Data(data) => {
                 let msg = String::from_utf8_lossy(&data);
-                let term_data = TerminalData {
+                let term_data = TerminalInput {
                     id,
                     data: encrypt
                         .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())
                         .into(),
-                    seq,
+                    offset: seq,
                 };
-                output_tx.send(ClientMessage::Data(term_data)).await?;
+                output_tx.send(ClientMessage::Input(term_data)).await?;
                 seq += msg.len() as u64;
             }
             ShellData::Sync(_) => (),

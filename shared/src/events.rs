@@ -56,18 +56,46 @@ pub struct NewShell {
     pub y: i32,
 }
 
+/// Information about an active shell.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellInfo {
+    /// ID of the shell.
+    pub id: Sid,
+    /// X position of the shell.
+    pub x: i32,
+    /// Y position of the shell.
+    pub y: i32,
+    /// Whether the shell is currently active.
+    pub active: bool,
+    /// Creation timestamp (optional).
+    pub created_at: Option<u64>,
+}
+
+/// List of active shells.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellList {
+    /// List of shell information.
+    pub shells: Vec<ShellInfo>,
+    /// Total number of shells.
+    pub count: usize,
+}
+
 /// Bidirectional streaming update from the client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
-    /// First stream message: "name,token".
+    /// Initial authentication message: "name,token".
     Hello { content: String },
-    /// Stream data from the terminal.
-    Data(TerminalData),
-    /// Acknowledge that a new shell was created.
-    CreatedShell(NewShell),
-    /// Acknowledge that a shell was closed.
-    ClosedShell { id: Sid },
+    /// User input data to terminal.
+    Input(TerminalInput),
+    /// Request to create a new shell.
+    CreateShellRequest { x: i32, y: i32 },
+    /// Request to close a shell.
+    CloseShellRequest { id: Sid },
+    /// Request to list all active shells.
+    ListShellRequest,
+    /// Request to resize terminal window.
+    ResizeRequest(TerminalSize),
     /// Response for latency measurement.
     Pong { timestamp: u64 },
     /// Error message.
@@ -78,16 +106,20 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
-    /// Remote input bytes, received from the user.
-    Input(TerminalInput),
-    /// ID of a new shell.
-    CreateShell(NewShell),
-    /// ID of a shell to close.
-    CloseShell { id: Sid },
+    /// Connection confirmation with user ID and session token.
+    Hello { user_id: Uid, token: String },
+    /// Terminal output data to client.
+    Data(TerminalData),
+    /// Confirmation that shell was created.
+    ShellCreated(NewShell),
+    /// Confirmation that shell was closed.
+    ShellClosed { id: Sid },
+    /// Response to shell list request.
+    ShellList(ShellList),
+    /// Confirmation that terminal was resized.
+    ShellResized(TerminalSize),
     /// Periodic sequence number sync.
     Sync(SequenceNumbers),
-    /// Resize a terminal window.
-    Resize(TerminalSize),
     /// Request a pong, with the timestamp.
     Ping { timestamp: u64 },
     /// Error message.
