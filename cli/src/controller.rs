@@ -170,8 +170,9 @@ impl Controller {
             tokio::select! {
                 // 1. Handle outgoing messages from local shells to send to browser
                 Some(msg) = self.output_rx.recv() => {
-                    // Send ServerMessage back to browser clients
-                    match serde_json::to_vec(&msg) {
+                    // Convert ClientMessage from local shells to ServerMessage for browser clients
+                    let server_msg = self.convert_client_to_server_message(msg);
+                    match serde_json::to_vec(&server_msg) {
                         Ok(msg_bytes) => {
                             if let Err(e) = sender.broadcast(msg_bytes.into()).await {
                                 warn!("Failed to send message to browser: {}", e);
@@ -223,6 +224,38 @@ impl Controller {
                         warn!("Failed to perform periodic connection optimization: {}", e);
                     }
                 }
+            }
+        }
+    }
+
+    /// Convert ClientMessage from local shells to ServerMessage for browser clients
+    fn convert_client_to_server_message(&self, client_msg: ClientMessage) -> ServerMessage {
+        match client_msg {
+            ClientMessage::Data(terminal_data) => {
+                // Convert TerminalData to TerminalInput for browser
+                let terminal_input = TerminalInput {
+                    id: terminal_data.id,
+                    data: terminal_data.data,
+                    offset: terminal_data.seq,
+                };
+                ServerMessage::Input(terminal_input)
+            }
+            ClientMessage::CreatedShell(new_shell) => ServerMessage::CreateShell(new_shell),
+            ClientMessage::ClosedShell { id } => ServerMessage::CloseShell { id },
+            ClientMessage::Error { message } => ServerMessage::Error { message },
+            ClientMessage::Hello { content: _ } => {
+                // Hello messages from local shells are not sent to browser
+                // Send a ping instead to maintain connection
+                ServerMessage::Ping {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                }
+            }
+            ClientMessage::Pong { timestamp } => {
+                // Convert pong to ping (though this shouldn't normally happen)
+                ServerMessage::Ping { timestamp }
             }
         }
     }
@@ -286,7 +319,9 @@ impl Controller {
                     self.encrypt
                         .segment(0x200000000, input_data.offset, &input_data.data);
                 if let Some(sender) = self.shells_tx.get(&input_data.id) {
-                    sender.send(ShellData::Data(processed_data)).await.ok();
+                    if let Err(e) = sender.send(ShellData::Data(processed_data)).await {
+                        warn!("Failed to send data to shell {}: {}", input_data.id, e);
+                    }
                 } else {
                     warn!(%input_data.id, "received data for non-existing shell");
                 }
@@ -317,13 +352,20 @@ impl Controller {
 
     /// Send initial state to newly connected browser client
     async fn send_initial_state_to_browser(&mut self) {
-        // Send existing shells information to the browser
-        for (&id, _) in &self.shells_tx {
-            // This would typically send information about existing shells
-            // For now, we'll just create a default shell if none exist
-            if self.shells_tx.is_empty() {
-                self.spawn_shell_task(id, (0, 0));
-                break;
+        // If no shells exist, create a default shell
+        if self.shells_tx.is_empty() {
+            let default_id = Sid(1);
+            debug!(
+                "Creating default shell {} for new browser client",
+                default_id
+            );
+            self.spawn_shell_task(default_id, (0, 0));
+        } else {
+            // Send information about existing shells to the browser
+            for (&shell_id, _) in &self.shells_tx {
+                debug!("Notifying browser about existing shell: {}", shell_id);
+                // Note: In a real implementation, you might want to send shell state
+                // For now, we just let the browser discover shells through normal operation
             }
         }
     }

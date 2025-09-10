@@ -10,3 +10,6 @@ pub mod controller;
 pub mod encrypt;
 pub mod runner;
 pub mod terminal;
+
+#[cfg(test)]
+mod test_conversion;
