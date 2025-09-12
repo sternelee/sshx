@@ -17,17 +17,10 @@ pub mod ticket;
 // Re-export commonly used types
 pub use crypto::{rand_alphanumeric, Encryptor};
 pub use events::{
-    ClientMessage, NewShell, SequenceNumbers, SerializedSession, SerializedShell, ServerMessage,
-    SessionEvent, TerminalData, TerminalInput, TerminalSize,
+    ClientMessage, ServerMessage, SessionEvent, TerminalData, TerminalInput, TerminalSize,
 };
-pub use p2p::{
-    P2pConfig, P2pEvent, P2pMessage, P2pNode, P2pSession, P2pSessionManager,
-    SessionInfo as P2pSessionInfo,
-};
-pub use session::{
-    CloseRequest, CloseResponse, OpenRequest, OpenResponse, SessionConfig, SessionInfo,
-    SessionState, ShellState, UserInfo,
-};
+pub use p2p::{P2pNode, P2pSession};
+pub use session::{CloseRequest, CloseResponse, OpenRequest, OpenResponse};
 pub use ticket::SessionTicket;
 
 /// Unique identifier for a shell within the session.

@@ -2,12 +2,13 @@
 
 use anyhow::Result;
 use futures_lite::StreamExt;
+use rand::RngCore;
 use std::collections::HashMap;
 
 use shared::{
     crypto::rand_alphanumeric,
-    events::{ClientMessage, NewShell, ServerMessage, TerminalInput},
-    p2p::{P2pConfig, P2pNode, P2pSession},
+    events::{ClientMessage, ServerMessage, TerminalInput},
+    p2p::{P2pNode, P2pSession},
     ticket::SessionTicket,
     Sid,
 };
@@ -53,22 +54,20 @@ impl Controller {
 
     /// Construct a new controller with custom relay server configuration.
     pub async fn with_relay(
-        relay_url: Option<String>,
+        _relay_url: Option<String>,
         runner: Runner,
         enable_readers: bool,
     ) -> Result<Self, anyhow::Error> {
-        let p2p_config = P2pConfig {
-            relay_url,
-            prefer_ipv4: true,
-            debug: true,
-        };
-
-        let p2p_node = P2pNode::new(p2p_config).await?;
+        let p2p_node = P2pNode::new().await?;
         println!("> our node id: {}", p2p_node.node_id());
 
-        let p2p_session = p2p_node.create_session().await?;
-        let topic = *p2p_session.topic();
-        let encryption_key = p2p_session.encryption_key().to_string();
+        // Generate session parameters
+        let topic = {
+            let mut bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut bytes);
+            iroh_gossip::proto::TopicId::from_bytes(bytes)
+        };
+        let encryption_key = rand_alphanumeric(14); // 83.3 bits of entropy
 
         let kdf_task = {
             let encryption_key = encryption_key.clone();
@@ -86,8 +85,8 @@ impl Controller {
             (None, None)
         };
 
-        let me = p2p_node.node_addr().await;
-        let ticket = SessionTicket::new(topic, vec![me], encryption_key.clone());
+        // Create a simple ticket with minimal configuration
+        let ticket = SessionTicket::new(topic, vec![], encryption_key.clone());
         let ticket_str = ticket.to_string();
 
         let write_ticket = if let Some(write_password) = write_password {
@@ -99,6 +98,9 @@ impl Controller {
         };
 
         let encrypt = kdf_task.await?;
+
+        // Create P2P session after ticket is created
+        let p2p_session = p2p_node.create_session(ticket.clone()).await?;
 
         let (output_tx, output_rx) = mpsc::channel(64);
         Ok(Self {
@@ -149,7 +151,6 @@ impl Controller {
 
     async fn try_run(&mut self) -> Result<(), anyhow::Error> {
         let mut event_stream = self.p2p_session.event_stream();
-        let sender = self.p2p_session.sender().clone();
 
         debug!("P2P controller started, waiting for events...");
 
@@ -160,7 +161,7 @@ impl Controller {
                     // Send ServerMessage back to browser clients
                     match serde_json::to_vec(&msg) {
                         Ok(msg_bytes) => {
-                            if let Err(e) = sender.broadcast(msg_bytes.into()).await {
+                            if let Err(e) = self.p2p_session.broadcast(msg_bytes).await {
                                 warn!("Failed to send message to browser: {}", e);
                             }
                         }
@@ -265,24 +266,20 @@ impl Controller {
                     warn!(%input_data.id, "received data for non-existing shell");
                 }
             }
-            ClientMessage::CreatedShell(new_shell) => {
+            ClientMessage::CreatedShell { id } => {
                 debug!(
-                    "Browser requested shell creation: {} at ({}, {})",
-                    new_shell.id, new_shell.x, new_shell.y
+                    "Browser requested shell creation: {}",
+                    id
                 );
                 // Create a new shell task as requested by browser
-                self.spawn_shell_task(new_shell.id, (new_shell.x, new_shell.y));
+                self.spawn_shell_task(id, (0, 0));
             }
             ClientMessage::ClosedShell { id } => {
                 debug!("Browser requested shell closure: {}", id);
                 // Remove the shell as requested by browser
                 self.shells_tx.remove(&id);
             }
-            ClientMessage::Pong { timestamp } => {
-                debug!("Received pong from browser: {}", timestamp);
-                // Calculate and log latency if needed
-            }
-            ClientMessage::Error { message } => {
+                ClientMessage::Error { message } => {
                 warn!("Received error from browser: {}", message);
                 // Handle browser-reported errors
             }
@@ -302,17 +299,9 @@ impl Controller {
         }
     }
 
-    /// This method is kept for compatibility but should not be used in P2P server mode
-    /// CLI is the server and should only receive ClientMessage from browser clients
-    async fn handle_server_message(&mut self, message: ServerMessage) {
-        warn!(
-            "Received unexpected ServerMessage in P2P server mode: {:?}",
-            message
-        );
-    }
-
+  
     /// Entry point to start a new terminal task on the client.
-    fn spawn_shell_task(&mut self, id: Sid, center: (i32, i32)) {
+    fn spawn_shell_task(&mut self, id: Sid, _center: (i32, i32)) {
         let (shell_tx, shell_rx) = mpsc::channel(16);
         let opt = self.shells_tx.insert(id, shell_tx);
         debug_assert!(opt.is_none(), "shell ID cannot be in existing tasks");
@@ -322,14 +311,9 @@ impl Controller {
         let output_tx = self.output_tx.clone();
         tokio::spawn(async move {
             debug!(%id, "spawning new shell");
-            let new_shell = NewShell {
-                id,
-                x: center.0,
-                y: center.1,
-            };
 
             // Notify other clients that this shell was created
-            if let Err(err) = output_tx.send(ClientMessage::CreatedShell(new_shell)).await {
+            if let Err(err) = output_tx.send(ClientMessage::CreatedShell { id }).await {
                 error!(%id, ?err, "failed to send shell creation message");
                 return;
             }
