@@ -155,7 +155,7 @@ impl P2pNode {
         let endpoint_clone = endpoint.clone();
         let config_clone = config.clone();
 
-        tokio::spawn(async move {
+        tokio::task::spawn(async move {
             Self::monitor_connection_quality(
                 endpoint_clone,
                 quality_clone,
