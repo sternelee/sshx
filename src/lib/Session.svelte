@@ -199,9 +199,6 @@
         } else if (message.shellLatency !== undefined) {
           const shellLatency = Number(message.shellLatency);
           shellLatencies = [...shellLatencies, shellLatency].slice(-10);
-        } else if (message.pong !== undefined) {
-          const serverLatency = Date.now() - Number(message.pong);
-          serverLatencies = [...serverLatencies, serverLatency].slice(-10);
         } else if (message.error) {
           console.warn("Server error: " + message.error);
         }
@@ -235,15 +232,7 @@
 
   onDestroy(() => srocket?.dispose());
 
-  // Send periodic ping messages for latency estimation.
-  onMount(() => {
-    const pingIntervalId = window.setInterval(() => {
-      if (srocket?.connected) {
-        srocket.send({ ping: BigInt(Date.now()) });
-      }
-    }, 2000);
-    return () => window.clearInterval(pingIntervalId);
-  });
+  // Ping/Pong events removed - no periodic ping needed
 
   function integerMedian(values: number[]) {
     if (values.length === 0) {

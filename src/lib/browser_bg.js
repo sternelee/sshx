@@ -303,7 +303,7 @@ function __wbg_adapter_52(arg0, arg1, arg2) {
     wasm.__wbindgen_export_11(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wbg_adapter_296(arg0, arg1, arg2, arg3) {
+function __wbg_adapter_283(arg0, arg1, arg2, arg3) {
     wasm.__wbindgen_export_12(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
 }
 
@@ -555,172 +555,6 @@ export class Session {
             wasm.__wbindgen_add_to_stack_pointer(16);
             wasm.__wbindgen_export_1(deferred1_0, deferred1_1, 1);
         }
-    }
-}
-
-const SessionManagerFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_sessionmanager_free(ptr >>> 0, 1));
-/**
- * Session manager for handling multiple P2P sessions
- */
-export class SessionManager {
-
-    static __wrap(ptr) {
-        ptr = ptr >>> 0;
-        const obj = Object.create(SessionManager.prototype);
-        obj.__wbg_ptr = ptr;
-        SessionManagerFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        SessionManagerFinalization.unregister(this);
-        return ptr;
-    }
-
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_sessionmanager_free(ptr, 0);
-    }
-    /**
-     * Creates a new session manager.
-     * @returns {Promise<SessionManager>}
-     */
-    static new() {
-        const ret = wasm.sessionmanager_new();
-        return takeObject(ret);
-    }
-    /**
-     * Creates a new session and adds it to the manager.
-     * @returns {Promise<string>}
-     */
-    create_session() {
-        const ret = wasm.sessionmanager_create_session(this.__wbg_ptr);
-        return takeObject(ret);
-    }
-    /**
-     * Joins an existing session and adds it to the manager.
-     * @param {string} ticket
-     * @returns {Promise<string>}
-     */
-    join_session(ticket) {
-        const ptr0 = passStringToWasm0(ticket, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.sessionmanager_join_session(this.__wbg_ptr, ptr0, len0);
-        return takeObject(ret);
-    }
-    /**
-     * Gets a session by ID.
-     * @param {string} _session_id
-     * @returns {Session}
-     */
-    get_session(_session_id) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(_session_id, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.sessionmanager_get_session(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            if (r2) {
-                throw takeObject(r1);
-            }
-            return Session.__wrap(r0);
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Lists all active session IDs.
-     * @returns {Array<any>}
-     */
-    list_sessions() {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.sessionmanager_list_sessions(retptr, this.__wbg_ptr);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            if (r2) {
-                throw takeObject(r1);
-            }
-            return takeObject(r0);
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Removes a session from the manager.
-     * @param {string} session_id
-     * @returns {boolean}
-     */
-    remove_session(session_id) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(session_id, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.sessionmanager_remove_session(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            if (r2) {
-                throw takeObject(r1);
-            }
-            return r0 !== 0;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Gets session info including metadata.
-     * @param {string} session_id
-     * @returns {any}
-     */
-    get_session_info(session_id) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(session_id, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.sessionmanager_get_session_info(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            if (r2) {
-                throw takeObject(r1);
-            }
-            return takeObject(r0);
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Broadcasts a message to all active sessions.
-     * @param {Uint8Array} data
-     * @returns {Promise<void>}
-     */
-    broadcast_to_all(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export_2);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.sessionmanager_broadcast_to_all(this.__wbg_ptr, ptr0, len0);
-        return takeObject(ret);
-    }
-    /**
-     * Sends a message to a specific session.
-     * @param {string} session_id
-     * @param {Uint8Array} data
-     * @returns {Promise<void>}
-     */
-    send_to_session(session_id, data) {
-        const ptr0 = passStringToWasm0(session_id, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_export_2);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.sessionmanager_send_to_session(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        return takeObject(ret);
     }
 }
 
@@ -1126,7 +960,7 @@ export function __wbg_new_23a2665fac83c611(arg0, arg1) {
             const a = state0.a;
             state0.a = 0;
             try {
-                return __wbg_adapter_296(a, state0.b, arg0, arg1);
+                return __wbg_adapter_283(a, state0.b, arg0, arg1);
             } finally {
                 state0.a = a;
             }
@@ -1309,11 +1143,6 @@ export function __wbg_session_new(arg0) {
     return addHeapObject(ret);
 };
 
-export function __wbg_sessionmanager_new(arg0) {
-    const ret = SessionManager.__wrap(arg0);
-    return addHeapObject(ret);
-};
-
 export function __wbg_setTimeout_2b339866a2aa3789(arg0, arg1) {
     const ret = setTimeout(getObject(arg0), arg1);
     return addHeapObject(ret);
@@ -1331,11 +1160,6 @@ export function __wbg_set_3f1d0b984ed272ed(arg0, arg1, arg2) {
 export function __wbg_set_65595bdd868b3009(arg0, arg1, arg2) {
     getObject(arg0).set(getObject(arg1), arg2 >>> 0);
 };
-
-export function __wbg_set_bb8cecf6a62b9f46() { return handleError(function (arg0, arg1, arg2) {
-    const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
-    return ret;
-}, arguments) };
 
 export function __wbg_setbinaryType_92fa1ffd873b327c(arg0, arg1) {
     getObject(arg0).binaryType = __wbindgen_enum_BinaryType[arg1];
@@ -1519,38 +1343,38 @@ export function __wbindgen_cb_drop(arg0) {
     return ret;
 };
 
-export function __wbindgen_closure_wrapper13711(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 2709, __wbg_adapter_49);
+export function __wbindgen_closure_wrapper13319(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 2615, __wbg_adapter_49);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper13766(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 2718, __wbg_adapter_52);
+export function __wbindgen_closure_wrapper13374(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 2624, __wbg_adapter_52);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper3673(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 733, __wbg_adapter_34);
+export function __wbindgen_closure_wrapper3409(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 646, __wbg_adapter_34);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper6449(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 1529, __wbg_adapter_37);
+export function __wbindgen_closure_wrapper6084(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 1435, __wbg_adapter_37);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper6588(arg0, arg1, arg2) {
-    const ret = makeClosure(arg0, arg1, 1542, __wbg_adapter_40);
+export function __wbindgen_closure_wrapper6222(arg0, arg1, arg2) {
+    const ret = makeClosure(arg0, arg1, 1448, __wbg_adapter_40);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper7126(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 1660, __wbg_adapter_43);
+export function __wbindgen_closure_wrapper6760(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 1566, __wbg_adapter_43);
     return addHeapObject(ret);
 };
 
-export function __wbindgen_closure_wrapper7914(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 1735, __wbg_adapter_46);
+export function __wbindgen_closure_wrapper7548(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 1641, __wbg_adapter_46);
     return addHeapObject(ret);
 };
 

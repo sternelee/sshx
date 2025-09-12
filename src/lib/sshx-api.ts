@@ -1,4 +1,4 @@
-import { SshxNode, Session, SessionSender, SessionManager } from "./browser";
+import { SshxNode, Session, SessionSender } from "./browser";
 
 // Type definitions for SSHX events
 export interface SshxEvent {
@@ -10,7 +10,6 @@ export interface SshxEvent {
   chunks?: [number, number, Uint8Array[]];
   hear?: [number, string, string];
   shellLatency?: number | bigint;
-  pong?: number | bigint;
   error?: string;
 }
 
@@ -128,7 +127,7 @@ export class SshxAPI {
 
     this.sessions.set(id, state);
     this.startEventStream(state);
-    
+
     // Notify that connection is established
     setTimeout(() => {
       for (const subscriber of state.subscribers) {
@@ -136,7 +135,7 @@ export class SshxAPI {
         subscriber({ hello: [Date.now(), "connected"] });
       }
     }, 100);
-    
+
     return id;
   }
 
@@ -244,7 +243,6 @@ export class SshxAPI {
           jsValue.chunks ||
           jsValue.hear ||
           jsValue.shellLatency ||
-          jsValue.pong ||
           jsValue.error
         ) {
           return jsValue as SshxEvent;
@@ -276,8 +274,8 @@ export class SshxAPI {
             [
               serverMessage.data.id,
               {
-                x: serverMessage.data.x,
-                y: serverMessage.data.y,
+                x: 0,
+                y: 0,
                 rows: 24,
                 cols: 80,
               },
@@ -305,10 +303,6 @@ export class SshxAPI {
               },
             ],
           ],
-        };
-      case "Ping":
-        return {
-          pong: serverMessage.data.timestamp,
         };
       case "Error":
         return {

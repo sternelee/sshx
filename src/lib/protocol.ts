@@ -27,7 +27,6 @@ export type WsServer = {
   chunks?: [Sid, number, Uint8Array[]];
   hear?: [Uid, string, string];
   shellLatency?: number | bigint;
-  pong?: number | bigint;
   error?: string;
 };
 
@@ -43,5 +42,4 @@ export type WsClient = {
   data?: [Sid, Uint8Array, bigint];
   subscribe?: [Sid, number];
   chat?: string;
-  ping?: bigint;
 };

@@ -5,7 +5,6 @@
     tick,
     beforeUpdate,
     afterUpdate,
-    createEventDispatcher,
   } from "svelte";
   import { fade } from "svelte/transition";
   import { debounce, throttle } from "lodash-es";
@@ -31,9 +30,6 @@
   import { settings } from "./settings";
   import { EyeIcon } from "svelte-feather-icons";
 
-  // export let id: string; // Not used in P2P mode
-
-  const dispatch = createEventDispatcher<{ receiveName: string }>();
 
   // The magic numbers "left" and "top" are used to approximately center the
   // terminal at the time that it is first created.
@@ -198,16 +194,6 @@
             kind: "success",
             message: `Connected to P2P network.`,
           });
-
-          // Simulate initial shell creation
-          const initialShell = {
-            id: 1, // Valid u32 ID
-            x: 0,
-            y: 0,
-            rows: 24,
-            cols: 80,
-          };
-          shells = [[initialShell.id, initialShell]];
         }
       }, 100);
     } else if (event.invalidAuth) {
@@ -262,9 +248,6 @@
     } else if (event.shellLatency !== undefined) {
       const shellLatency = Number(event.shellLatency);
       shellLatencies = [...shellLatencies, shellLatency].slice(-10);
-    } else if (event.pong !== undefined) {
-      const serverLatency = Date.now() - Number(event.pong);
-      serverLatencies = [...serverLatencies, serverLatency].slice(-10);
     } else if (event.error) {
       console.warn("P2P error: " + event.error);
     }
@@ -292,15 +275,12 @@
       };
     } else if (command.create) {
       // Send ClientMessage::CreatedShell to acknowledge shell creation
-      const [x, y] = command.create;
       // Generate a valid u32 ID (max 4,294,967,295)
       const id = Math.floor(Math.random() * 4294967295);
       clientMessage = {
         type: "CreatedShell",
         data: {
           id: id,
-          x: x,
-          y: y,
         },
       };
     } else if (command.close) {
@@ -324,10 +304,8 @@
       // This will be handled by the backend
       return;
     } else if (command.ping) {
-      clientMessage = {
-        type: "Pong",
-        data: { timestamp: Number(command.ping) },
-      };
+      // Ping/Pong events removed - no-op
+      return;
     } else if (command.chat) {
       // This will be handled by the backend
       return;
@@ -341,52 +319,13 @@
     await sshxApi.sendData(currentSessionId, data);
   }
 
-  function handleConnect(sessionId?: string) {
-    // For P2P mode, we don't need to authenticate in the traditional way
-    // The connection is established through the P2P network
-    connected = true;
-    console.log("P2P connected, sending hello message");
-
-    // Send initial hello message
-    sendCommand({ authenticate: true });
-
-    // Send name if available
-    if ($settings.name) {
-      sendCommand({ setName: $settings.name });
-    }
-  }
-
-  function handleDisconnect(sessionId?: string) {
-    connected = false;
-    subscriptions.clear();
-    users = [];
-    serverLatencies = [];
-    shellLatencies = [];
-  }
-
-  function handleClose(event: CloseEvent) {
-    if (event.code === 4404) {
-      exitReason = "Failed to connect: " + event.reason;
-    } else if (event.code === 4500) {
-      exitReason = "Internal server error: " + event.reason;
-    }
-  }
-
   onDestroy(() => {
     if (currentSessionId && sshxApi) {
       sshxApi.closeSession(currentSessionId);
     }
   });
 
-  // Send periodic ping messages for latency estimation.
-  onMount(() => {
-    const pingIntervalId = window.setInterval(() => {
-      if (connected && currentSessionId) {
-        sendCommand({ ping: BigInt(Date.now()) });
-      }
-    }, 2000);
-    return () => window.clearInterval(pingIntervalId);
-  });
+  // Ping/Pong events removed - no periodic ping needed
 
   function integerMedian(values: number[]) {
     if (values.length === 0) {
@@ -406,13 +345,13 @@
   let counter = 0n;
 
   async function handleCreate() {
-    if (hasWriteAccess === false) {
-      makeToast({
-        kind: "info",
-        message: "You are in read-only mode and cannot create new terminals.",
-      });
-      return;
-    }
+    // if (hasWriteAccess === false) {
+    //   makeToast({
+    //     kind: "info",
+    //     message: "You are in read-only mode and cannot create new terminals.",
+    //   });
+    //   return;
+    // }
     if (shells.length >= 14) {
       makeToast({
         kind: "error",

@@ -12,6 +12,7 @@ use n0_future::{boxed::BoxStream, StreamExt};
 use crate::ticket::SessionTicket;
 
 /// P2P node for iroh networking
+#[derive(Debug)]
 pub struct P2pNode {
     secret_key: SecretKey,
     endpoint: Endpoint,
@@ -63,11 +64,23 @@ impl P2pNode {
 }
 
 /// A P2P session for managing communication over iroh gossip
+#[derive(Debug)]
 pub struct P2pSession {
     topic: TopicId,
     ticket: SessionTicket,
     sender: GossipSender,
     receiver: Option<GossipReceiver>,
+}
+
+impl Clone for P2pSession {
+    fn clone(&self) -> Self {
+        Self {
+            topic: self.topic,
+            ticket: self.ticket.clone(),
+            sender: self.sender.clone(),
+            receiver: None, // Receiver cannot be cloned
+        }
+    }
 }
 
 impl P2pSession {
@@ -117,6 +130,11 @@ impl P2pSession {
     /// Takes ownership of the receiver
     pub fn take_receiver(&mut self) -> Option<GossipReceiver> {
         self.receiver.take()
+    }
+
+    /// Returns a reference to the sender
+    pub fn sender(&self) -> &GossipSender {
+        &self.sender
     }
 
     /// Creates a stream of gossip events

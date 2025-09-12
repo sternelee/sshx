@@ -38,49 +38,6 @@ export class Session {
   readonly sender: SessionSender;
   readonly receiver: ReadableStream | undefined;
 }
-/**
- * Session manager for handling multiple P2P sessions
- */
-export class SessionManager {
-  private constructor();
-  free(): void;
-  /**
-   * Creates a new session manager.
-   */
-  static new(): Promise<SessionManager>;
-  /**
-   * Creates a new session and adds it to the manager.
-   */
-  create_session(): Promise<string>;
-  /**
-   * Joins an existing session and adds it to the manager.
-   */
-  join_session(ticket: string): Promise<string>;
-  /**
-   * Gets a session by ID.
-   */
-  get_session(_session_id: string): Session;
-  /**
-   * Lists all active session IDs.
-   */
-  list_sessions(): Array<any>;
-  /**
-   * Removes a session from the manager.
-   */
-  remove_session(session_id: string): boolean;
-  /**
-   * Gets session info including metadata.
-   */
-  get_session_info(session_id: string): any;
-  /**
-   * Broadcasts a message to all active sessions.
-   */
-  broadcast_to_all(data: Uint8Array): Promise<void>;
-  /**
-   * Sends a message to a specific session.
-   */
-  send_to_session(session_id: string, data: Uint8Array): Promise<void>;
-}
 export class SessionSender {
   private constructor();
   free(): void;
