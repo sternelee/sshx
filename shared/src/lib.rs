@@ -18,7 +18,7 @@ pub mod ticket;
 pub use crypto::{rand_alphanumeric, Encryptor};
 pub use events::{
     ClientMessage, NewShell, SequenceNumbers, SerializedSession, SerializedShell, ServerMessage,
-    SessionEvent, TerminalData, TerminalInput, TerminalSize,
+    SessionEvent, ShellInfo, ShellList, TerminalData, TerminalInput, TerminalSize,
 };
 pub use p2p::{
     P2pConfig, P2pEvent, P2pMessage, P2pNode, P2pSession, P2pSessionManager,

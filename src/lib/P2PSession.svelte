@@ -212,7 +212,7 @@
       connected = true;
       exitReason = null;
 
-      // Create initial shell
+      // Create initial shell and request shell list
       setTimeout(() => {
         if (connected) {
           makeToast({
@@ -229,6 +229,9 @@
             cols: 80,
           };
           shells = [[initialShell.id, initialShell]];
+          
+          // Request initial shell list from server
+          handleListShells();
         }
       }, 100);
     } else if (event.invalidAuth) {
@@ -260,6 +263,62 @@
       users = users.filter(([uid]) => uid !== id);
       if (update !== null) {
         users = [...users, [id, update]];
+      }
+    } else if (event.shellCreated) {
+      // Handle ShellCreated event from server
+      const newShell = {
+        id: event.shellCreated.id,
+        x: event.shellCreated.x,
+        y: event.shellCreated.y,
+        rows: 24,
+        cols: 80,
+      };
+      shells = [...shells, [newShell.id, newShell]];
+      makeToast({
+        kind: "success",
+        message: `Terminal ${newShell.id} created`,
+      });
+    } else if (event.shellClosed) {
+      // Handle ShellClosed event from server
+      shells = shells.filter(([id]) => id !== event.shellClosed.id);
+      makeToast({
+        kind: "info",
+        message: `Terminal ${event.shellClosed.id} closed`,
+      });
+    } else if (event.shellList) {
+      // Handle ShellList response from server
+      console.log("Received shell list:", event.shellList);
+      // Update shells array with the server's list
+      const updatedShells = event.shellList.shells.map((shell: any) => [
+        shell.id,
+        {
+          x: shell.x,
+          y: shell.y,
+          rows: 24,
+          cols: 80,
+        },
+      ]);
+      shells = updatedShells;
+      
+      // Show toast with shell count
+      makeToast({
+        kind: "info",
+        message: `Found ${event.shellList.count} active terminal${event.shellList.count !== 1 ? 's' : ''}`,
+      });
+    } else if (event.shellResized) {
+      // Handle ShellResized event from server
+      const shellIndex = shells.findIndex(([id]) => id === event.shellResized.id);
+      if (shellIndex !== -1) {
+        const [id, existingShell] = shells[shellIndex];
+        shells[shellIndex] = [
+          id,
+          {
+            ...existingShell,
+            rows: event.shellResized.rows,
+            cols: event.shellResized.cols,
+          },
+        ];
+        shells = [...shells]; // Trigger reactivity
       }
     } else if (event.shells) {
       shells = event.shells;
@@ -312,29 +371,38 @@
         data: { content: command.setName },
       };
     } else if (command.create) {
-      // Send ClientMessage::CreatedShell to acknowledge shell creation
+      // Send CreateShellRequest to request shell creation
       const [x, y] = command.create;
-      // Generate a valid u32 ID (max 4,294,967,295)
-      const id = Math.floor(Math.random() * 4294967295);
       clientMessage = {
-        type: "CreatedShell",
+        type: "CreateShellRequest",
         data: {
-          id: id,
           x: x,
           y: y,
         },
       };
     } else if (command.close) {
-      // Send ClientMessage::ClosedShell to acknowledge shell closure
+      // Send CloseShellRequest to request shell closure
       clientMessage = {
-        type: "ClosedShell",
+        type: "CloseShellRequest",
         data: {
           id: command.close,
         },
       };
     } else if (command.move) {
-      // This will be handled by the backend
-      return;
+      // Send ResizeRequest for terminal movement/resize
+      const [id, winsize] = command.move;
+      if (winsize) {
+        clientMessage = {
+          type: "ResizeRequest",
+          data: {
+            id: id,
+            rows: winsize.rows,
+            cols: winsize.cols,
+          },
+        };
+      } else {
+        return;
+      }
     } else if (command.subscribe) {
       // This will be handled by the backend
       return;
@@ -348,6 +416,12 @@
       clientMessage = {
         type: "Pong",
         data: { timestamp: Number(command.ping) },
+      };
+    } else if (command.listShell) {
+      // Send ListShellRequest to get current shell list
+      clientMessage = {
+        type: "ListShellRequest",
+        data: {},
       };
     } else if (command.chat) {
       // This will be handled by the backend
@@ -406,7 +480,18 @@
         sendCommand({ ping: BigInt(Date.now()) });
       }
     }, 2000);
-    return () => window.clearInterval(pingIntervalId);
+
+    // Auto-refresh shell list every 30 seconds
+    const refreshIntervalId = window.setInterval(() => {
+      if (connected && currentSessionId) {
+        refreshShellList();
+      }
+    }, 30000);
+
+    return () => {
+      window.clearInterval(pingIntervalId);
+      window.clearInterval(refreshIntervalId);
+    };
   });
 
   function integerMedian(values: number[]) {
@@ -450,6 +535,25 @@
     const { x, y } = arrangeNewTerminal(existing);
     sendCommand({ create: [x, y] });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
+  }
+
+  async function handleListShells() {
+    if (!connected) {
+      makeToast({
+        kind: "error",
+        message: "Cannot list shells: not connected to server",
+      });
+      return;
+    }
+    
+    sendCommand({ listShell: true });
+  }
+
+  async function refreshShellList() {
+    // Auto-refresh shell list every 30 seconds
+    if (connected) {
+      handleListShells();
+    }
   }
 
   async function handleInput(id: number, data: Uint8Array) {
@@ -632,6 +736,7 @@
       {newMessages}
       {hasWriteAccess}
       on:create={handleCreate}
+      on:listShells={handleListShells}
       on:chat={() => {
         showChat = !showChat;
         newMessages = false;

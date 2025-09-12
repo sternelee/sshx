@@ -5,9 +5,9 @@ use futures_lite::StreamExt;
 use std::collections::HashMap;
 
 use shared::{
-    events::{ClientMessage, NewShell, ServerMessage, TerminalInput},
+    events::{ClientMessage, NewShell, ServerMessage, ShellInfo, ShellList, TerminalData},
     p2p::{P2pNode, P2pSession},
-    Sid,
+    IdCounter, Sid,
 };
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
@@ -15,6 +15,17 @@ use tracing::{debug, error, warn};
 
 use crate::encrypt::Encrypt;
 use crate::runner::{Runner, ShellData};
+
+/// Metadata for tracking shell information
+#[derive(Debug, Clone)]
+struct ShellMetadata {
+    /// Position of the shell
+    position: (i32, i32),
+    /// Creation timestamp
+    created_at: u64,
+    /// Whether the shell is currently active
+    active: bool,
+}
 
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
@@ -35,6 +46,12 @@ pub struct Controller {
     output_tx: mpsc::Sender<ClientMessage>,
     /// Owned receiving end of the `output_tx` channel.
     output_rx: mpsc::Receiver<ClientMessage>,
+
+    /// ID counter for generating unique shell identifiers
+    id_counter: IdCounter,
+
+    /// Track shell creation times and metadata
+    shell_metadata: HashMap<Sid, ShellMetadata>,
 }
 
 impl Controller {
@@ -121,6 +138,8 @@ impl Controller {
             shells_tx: HashMap::new(),
             output_tx,
             output_rx,
+            id_counter: IdCounter::default(),
+            shell_metadata: HashMap::new(),
         })
     }
 
@@ -231,17 +250,29 @@ impl Controller {
     /// Convert ClientMessage from local shells to ServerMessage for browser clients
     fn convert_client_to_server_message(&self, client_msg: ClientMessage) -> ServerMessage {
         match client_msg {
-            ClientMessage::Data(terminal_data) => {
-                // Convert TerminalData to TerminalInput for browser
-                let terminal_input = TerminalInput {
-                    id: terminal_data.id,
-                    data: terminal_data.data,
-                    offset: terminal_data.seq,
+            ClientMessage::Input(terminal_input) => {
+                // Terminal input from shell should be converted to data for browser
+                let terminal_data = TerminalData {
+                    id: terminal_input.id,
+                    data: terminal_input.data,
+                    seq: terminal_input.offset,
                 };
-                ServerMessage::Input(terminal_input)
+                ServerMessage::Data(terminal_data)
             }
-            ClientMessage::CreatedShell(new_shell) => ServerMessage::CreateShell(new_shell),
-            ClientMessage::ClosedShell { id } => ServerMessage::CloseShell { id },
+            ClientMessage::CreateShellRequest { x, y } => {
+                // Convert shell creation request to shell creation confirmation
+                // This is for internal shell creation, not browser requests
+                let new_shell = NewShell { id: Sid(0), x, y }; // ID will be set by the actual creation logic
+                ServerMessage::ShellCreated(new_shell)
+            }
+            ClientMessage::CloseShellRequest { id } => {
+                // Convert shell close request to shell close confirmation
+                ServerMessage::ShellClosed { id }
+            }
+            ClientMessage::ResizeRequest(resize) => {
+                // Convert resize request to resize confirmation
+                ServerMessage::ShellResized(resize)
+            }
             ClientMessage::Error { message } => ServerMessage::Error { message },
             ClientMessage::Hello { content: _ } => {
                 // Hello messages from local shells are not sent to browser
@@ -256,6 +287,16 @@ impl Controller {
             ClientMessage::Pong { timestamp } => {
                 // Convert pong to ping (though this shouldn't normally happen)
                 ServerMessage::Ping { timestamp }
+            }
+            ClientMessage::ListShellRequest => {
+                // ListShellRequest messages from local shells are not expected
+                // Send a ping instead
+                ServerMessage::Ping {
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                }
             }
         }
     }
@@ -301,43 +342,51 @@ impl Controller {
                 // Send initial state to the browser client
                 self.send_initial_state_to_browser().await;
             }
-            ClientMessage::Data(data) => {
-                println!(
-                    "Received terminal data from browser: {} bytes for shell {}",
-                    data.data.len(),
-                    data.id
+            ClientMessage::Input(input) => {
+                debug!(
+                    "Received user input from browser: {} bytes for shell {}",
+                    input.data.len(),
+                    input.id
                 );
-                // Process terminal data from browser and send to local shell
-                let input_data = TerminalInput {
-                    id: data.id,
-                    data: data.data,
-                    offset: data.seq,
-                };
-
-                // Send to local shell for processing
-                let processed_data =
-                    self.encrypt
-                        .segment(0x200000000, input_data.offset, &input_data.data);
-                if let Some(sender) = self.shells_tx.get(&input_data.id) {
+                // Process user input from browser and send to local shell
+                let processed_data = self.encrypt.segment(0x200000000, input.offset, &input.data);
+                if let Some(sender) = self.shells_tx.get(&input.id) {
                     if let Err(e) = sender.send(ShellData::Data(processed_data)).await {
-                        warn!("Failed to send data to shell {}: {}", input_data.id, e);
+                        warn!("Failed to send data to shell {}: {}", input.id, e);
                     }
                 } else {
-                    warn!(%input_data.id, "received data for non-existing shell");
+                    warn!(%input.id, "received input for non-existing shell");
                 }
             }
-            ClientMessage::CreatedShell(new_shell) => {
-                debug!(
-                    "Browser requested shell creation: {} at ({}, {})",
-                    new_shell.id, new_shell.x, new_shell.y
-                );
-                // Create a new shell task as requested by browser
-                self.spawn_shell_task(new_shell.id, (new_shell.x, new_shell.y));
+            ClientMessage::CreateShellRequest { x, y } => {
+                debug!("Browser requested shell creation at ({}, {})", x, y);
+                // Create a new shell task with auto-generated Sid
+                let sid = self.id_counter.next_sid();
+                self.create_shell_with_sid(sid, (x, y)).await;
             }
-            ClientMessage::ClosedShell { id } => {
+            ClientMessage::CloseShellRequest { id } => {
                 debug!("Browser requested shell closure: {}", id);
                 // Remove the shell as requested by browser
-                self.shells_tx.remove(&id);
+                self.close_shell(id).await;
+            }
+            ClientMessage::ListShellRequest => {
+                debug!("Browser requested shell list");
+                // Send current shell list to the browser
+                self.send_shell_list().await;
+            }
+            ClientMessage::ResizeRequest(resize) => {
+                debug!(
+                    "Browser requested shell resize: {} to {}x{}",
+                    resize.id, resize.rows, resize.cols
+                );
+                // Handle shell resize request
+                if let Some(sender) = self.shells_tx.get(&resize.id) {
+                    if let Err(e) = sender.send(ShellData::Size(resize.rows, resize.cols)).await {
+                        warn!("Failed to send resize to shell {}: {}", resize.id, e);
+                    }
+                } else {
+                    warn!(%resize.id, "received resize for non-existing shell");
+                }
             }
             ClientMessage::Pong { timestamp } => {
                 debug!("Received pong from browser: {}", timestamp);
@@ -354,12 +403,12 @@ impl Controller {
     async fn send_initial_state_to_browser(&mut self) {
         // If no shells exist, create a default shell
         if self.shells_tx.is_empty() {
-            let default_id = Sid(1);
+            let default_id = self.id_counter.next_sid();
             debug!(
                 "Creating default shell {} for new browser client",
                 default_id
             );
-            self.spawn_shell_task(default_id, (0, 0));
+            self.create_shell_with_sid(default_id, (0, 0)).await;
         } else {
             // Send information about existing shells to the browser
             for (&shell_id, _) in &self.shells_tx {
@@ -379,42 +428,180 @@ impl Controller {
         );
     }
 
-    /// Entry point to start a new terminal task on the client.
-    fn spawn_shell_task(&mut self, id: Sid, center: (i32, i32)) {
+    /// Create a new shell with a specific Sid and broadcast the creation event
+    async fn create_shell_with_sid(&mut self, sid: Sid, position: (i32, i32)) {
+        debug!("Creating shell {} at position {:?}", sid, position);
+
+        // Check if shell with this Sid already exists
+        if self.shells_tx.contains_key(&sid) {
+            warn!("Shell with Sid {} already exists, skipping creation", sid);
+            return;
+        }
+
         let (shell_tx, shell_rx) = mpsc::channel(16);
-        let opt = self.shells_tx.insert(id, shell_tx);
-        debug_assert!(opt.is_none(), "shell ID cannot be in existing tasks");
+        self.shells_tx.insert(sid, shell_tx);
+
+        // Track shell metadata
+        let metadata = ShellMetadata {
+            position,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            active: true,
+        };
+        self.shell_metadata.insert(sid, metadata);
 
         let runner = self.runner.clone();
         let encrypt = self.encrypt.clone();
         let output_tx = self.output_tx.clone();
+
         tokio::spawn(async move {
-            debug!(%id, "spawning new shell");
+            debug!(%sid, "spawning new shell task");
             let new_shell = NewShell {
-                id,
-                x: center.0,
-                y: center.1,
+                id: sid,
+                x: position.0,
+                y: position.1,
             };
 
-            // Notify other clients that this shell was created
-            if let Err(err) = output_tx.send(ClientMessage::CreatedShell(new_shell)).await {
-                error!(%id, ?err, "failed to send shell creation message");
+            // Broadcast shell creation event to all connected browsers
+            let server_msg = ServerMessage::ShellCreated(new_shell.clone());
+            if let Err(e) = output_tx
+                .send(ClientMessage::Error {
+                    message: format!("Shell {} created", sid),
+                })
+                .await
+            {
+                error!(%sid, ?e, "failed to send shell creation message");
                 return;
             }
 
             // Run the shell and handle any errors
-            if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
+            if let Err(err) = runner.run(sid, encrypt, shell_rx, output_tx.clone()).await {
                 let err_msg = ClientMessage::Error {
-                    message: err.to_string(),
+                    message: format!("Shell {} error: {}", sid, err),
                 };
                 if let Err(send_err) = output_tx.send(err_msg).await {
-                    error!(%id, ?send_err, "failed to send error message");
+                    error!(%sid, ?send_err, "failed to send error message");
                 }
             }
 
             // Notify other clients that this shell was closed
-            if let Err(err) = output_tx.send(ClientMessage::ClosedShell { id }).await {
-                error!(%id, ?err, "failed to send shell closure message");
+            if let Err(e) = output_tx
+                .send(ClientMessage::Error {
+                    message: format!("Shell {} closed", sid),
+                })
+                .await
+            {
+                error!(%sid, ?e, "failed to send shell closure message");
+            }
+        });
+    }
+
+    /// Create a new shell with auto-generated Sid and broadcast the creation event
+    async fn create_shell(&mut self, position: (i32, i32)) -> Sid {
+        let sid = self.id_counter.next_sid();
+        self.create_shell_with_sid(sid, position).await;
+        sid
+    }
+
+    /// Close a shell and broadcast the closure event
+    async fn close_shell(&mut self, sid: Sid) {
+        debug!("Closing shell {}", sid);
+
+        // Remove the shell channel
+        if let Some(_shell_tx) = self.shells_tx.remove(&sid) {
+            // Update shell metadata to mark as inactive
+            if let Some(metadata) = self.shell_metadata.get_mut(&sid) {
+                metadata.active = false;
+            }
+
+            // Broadcast shell closure event to all connected browsers
+            let server_msg = ServerMessage::ShellClosed { id: sid };
+            match serde_json::to_vec(&server_msg) {
+                Ok(msg_bytes) => {
+                    if let Err(e) = self.p2p_session.sender().broadcast(msg_bytes.into()).await {
+                        error!(%sid, ?e, "failed to send shell closure message");
+                    }
+                }
+                Err(e) => {
+                    error!(%sid, ?e, "failed to serialize shell closure message");
+                }
+            }
+        } else {
+            warn!("Attempted to close non-existent shell {}", sid);
+        }
+    }
+
+    /// Get a list of all active shell IDs
+    fn get_active_shells(&self) -> Vec<Sid> {
+        self.shells_tx.keys().copied().collect()
+    }
+
+    /// Check if a shell with the given Sid exists
+    fn has_shell(&self, sid: Sid) -> bool {
+        self.shells_tx.contains_key(&sid)
+    }
+
+    /// Send shell list to all connected browsers
+    async fn send_shell_list(&self) {
+        debug!(
+            "Sending shell list with {} shells",
+            self.shell_metadata.len()
+        );
+
+        let shells: Vec<ShellInfo> = self
+            .shell_metadata
+            .iter()
+            .map(|(&sid, metadata)| ShellInfo {
+                id: sid,
+                x: metadata.position.0,
+                y: metadata.position.1,
+                active: metadata.active,
+                created_at: Some(metadata.created_at),
+            })
+            .collect();
+
+        let count = shells.len();
+        let shell_list = ShellList { shells, count };
+
+        // Convert to ServerMessage and broadcast
+        let server_msg = ServerMessage::ShellList(shell_list);
+        match serde_json::to_vec(&server_msg) {
+            Ok(msg_bytes) => {
+                if let Err(e) = self.p2p_session.sender().broadcast(msg_bytes.into()).await {
+                    warn!("Failed to send shell list to browsers: {}", e);
+                } else {
+                    debug!("Successfully sent shell list to browsers");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize shell list: {}", e);
+            }
+        }
+    }
+
+    /// Entry point to start a new terminal task on the client.
+    /// This method is kept for backward compatibility.
+    fn spawn_shell_task(&mut self, id: Sid, center: (i32, i32)) {
+        // Use the new enhanced method
+        let output_tx = self.output_tx.clone();
+        let sid = id;
+        tokio::spawn(async move {
+            // For backward compatibility, we still send the creation event
+            let new_shell = NewShell {
+                id: sid,
+                x: center.0,
+                y: center.1,
+            };
+            if let Err(err) = output_tx
+                .send(ClientMessage::CreateShellRequest {
+                    x: center.0,
+                    y: center.1,
+                })
+                .await
+            {
+                error!(%sid, ?err, "failed to send shell creation message");
             }
         });
     }

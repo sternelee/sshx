@@ -11,5 +11,9 @@
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "enabledMcpjsonServers": [
+    "mcp_box"
+  ],
+  "enableAllProjectMcpServers": true
 }
