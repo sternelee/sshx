@@ -1,7 +1,6 @@
-/.vscode
-
-/target
-
-/node_modules
-/.svelte-kit
-/build
+node_modules
+build
+target
+.svelte-kit
+.claude
+.cargo

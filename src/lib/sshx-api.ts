@@ -265,44 +265,16 @@ export class SshxAPI {
           chunks: [
             serverMessage.data.id,
             serverMessage.data.offset,
-            [serverMessage.data.data],
+            [new Uint8Array(serverMessage.data.data)],
           ],
         };
       case "CreatedShell":
         return {
-          shells: [
-            [
-              serverMessage.data.id,
-              {
-                x: 0,
-                y: 0,
-                rows: 24,
-                cols: 80,
-              },
-            ],
-          ],
-        };
-      case "CloseShell":
-        return {
-          shells: [], // Will trigger shell removal
+          shells: [[serverMessage.data.id, { x: 0, y: 0, rows: 24, cols: 80 }]],
         };
       case "ClosedShell":
         return {
-          shells: [], // Will trigger shell removal
-        };
-      case "Resize":
-        return {
-          shells: [
-            [
-              serverMessage.data.id,
-              {
-                x: 0,
-                y: 0,
-                rows: serverMessage.data.rows,
-                cols: serverMessage.data.cols,
-              },
-            ],
-          ],
+          shells: [], // Empty shells array triggers shell removal
         };
       case "Error":
         return {

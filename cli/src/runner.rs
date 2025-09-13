@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use encoding_rs::{CoderResult, UTF_8};
-use shared::{ClientMessage, Sid, TerminalData};
+use shared::{ServerMessage, Sid, TerminalData};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
@@ -42,7 +42,7 @@ impl Runner {
         id: Sid,
         encrypt: Encrypt,
         shell_rx: mpsc::Receiver<ShellData>,
-        output_tx: mpsc::Sender<ClientMessage>,
+        output_tx: mpsc::Sender<ServerMessage>,
     ) -> Result<()> {
         match self {
             Self::Shell(shell) => shell_task(id, encrypt, shell, shell_rx, output_tx).await,
@@ -57,7 +57,7 @@ async fn shell_task(
     encrypt: Encrypt,
     shell: &str,
     mut shell_rx: mpsc::Receiver<ShellData>,
-    output_tx: mpsc::Sender<ClientMessage>,
+    output_tx: mpsc::Sender<ServerMessage>,
 ) -> Result<()> {
     let mut term = Terminal::new(shell).await?;
     term.set_winsize(24, 80)?;
@@ -123,7 +123,7 @@ async fn shell_task(
                 data: data.into(),
                 seq: (content_offset + start) as u64,
             };
-            output_tx.send(ClientMessage::Data(data)).await?;
+            output_tx.send(ServerMessage::Data(data)).await?;
             seq = content_offset + end;
             seq_outdated = 0;
         }
@@ -150,7 +150,7 @@ async fn echo_task(
     id: Sid,
     encrypt: Encrypt,
     mut shell_rx: mpsc::Receiver<ShellData>,
-    output_tx: mpsc::Sender<ClientMessage>,
+    output_tx: mpsc::Sender<ServerMessage>,
 ) -> Result<()> {
     let mut seq = 0;
     while let Some(item) = shell_rx.recv().await {
@@ -164,7 +164,7 @@ async fn echo_task(
                         .into(),
                     seq,
                 };
-                output_tx.send(ClientMessage::Data(term_data)).await?;
+                output_tx.send(ServerMessage::Data(term_data)).await?;
                 seq += msg.len() as u64;
             }
             ShellData::Sync(_) => (),

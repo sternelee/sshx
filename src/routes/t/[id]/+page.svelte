@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from "$app/stores";
-  import P2PSession from "$lib/P2PSession.svelte";
+  import Session from "$lib/Session.svelte";
 
   let title: string = "P2P Remote Terminal | sshx";
 </script>
@@ -15,7 +15,7 @@
   </style>
 </svelte:head>
 
-<P2PSession
+<Session
   id={$page.params.id || "p2p"}
   on:receiveName={({ detail: sessionName }) => {
     if (sessionName) {

@@ -39,32 +39,25 @@ pub struct TerminalSize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
-    /// First stream message: "name,token".
-    Hello { content: String },
-    /// Stream data from the terminal.
-    Data(TerminalData),
-    /// Acknowledge that a new shell was created.
-    CreatedShell { id: Sid },
-    /// Acknowledge that a shell was closed.
-    ClosedShell { id: Sid },
-    /// Error message.
-    Error { message: String },
+    /// Request to create a new shell.
+    CreateShell { id: Sid },
+    /// Input bytes from user terminal.
+    Input(TerminalInput),
+    /// Request to close a shell.
+    CloseShell { id: Sid },
 }
 
 /// Bidirectional streaming update from the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
-    /// Remote input bytes, received from the user.
-    Input(TerminalInput),
-    /// ID of a new shell.
-    CreateShell { id: Sid },
-    /// ID of a shell to close.
-    CloseShell { id: Sid },
-    /// Periodic sequence number sync.
-    Sync { shells: Vec<(Sid, u64)> },
-    /// Resize a terminal window.
-    Resize(TerminalSize),
+    /// Notification that a shell was created.
+    CreatedShell { id: Sid },
+    /// Terminal data from shell output.
+    Data(TerminalData),
+
+    /// Notification that a shell was closed.
+    ClosedShell { id: Sid },
     /// Error message.
     Error { message: String },
 }
@@ -85,17 +78,6 @@ pub enum SessionEvent {
         /// The user ID of the peer.
         user_id: Uid,
     },
-    /// A shell was created.
-    ShellCreated { id: Sid },
-    /// A shell was closed.
-    ShellClosed {
-        /// ID of the shell that was closed.
-        id: Sid,
-    },
-    /// Terminal data was received.
-    TerminalData(TerminalData),
-    /// Terminal was resized.
-    TerminalResize { id: Sid, size: TerminalSize },
     /// Session error occurred.
     Error {
         /// Error message.

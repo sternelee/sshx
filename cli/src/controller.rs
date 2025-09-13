@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use shared::{
     crypto::rand_alphanumeric,
-    events::{ClientMessage, TerminalInput},
+    events::{ClientMessage, ServerMessage, TerminalInput},
     p2p::{P2pNode, P2pSession},
     ticket::SessionTicket,
     Sid,
@@ -30,9 +30,9 @@ pub struct Controller {
     /// Channels with backpressure routing messages to each shell task.
     shells_tx: HashMap<Sid, mpsc::Sender<ShellData>>,
     /// Channel shared with tasks to allow them to output client messages.
-    output_tx: mpsc::Sender<ClientMessage>,
+    output_tx: mpsc::Sender<ServerMessage>,
     /// Owned receiving end of the `output_tx` channel.
-    output_rx: mpsc::Receiver<ClientMessage>,
+    output_rx: mpsc::Receiver<ServerMessage>,
 }
 
 impl Controller {
@@ -158,18 +158,17 @@ impl Controller {
     /// Handle ClientMessage received from browser clients
     async fn handle_client_message_from_browser(&mut self, message: ClientMessage) {
         match message {
-            ClientMessage::Hello { .. } => {
-                // Create default shell when browser connects
-                if self.shells_tx.is_empty() {
-                    self.spawn_shell_task(Sid(1), (0, 0));
-                }
+            ClientMessage::CreateShell { id } => {
+                debug!("Browser requested shell creation: {}", id);
+                // Create a new shell task as requested by browser
+                self.spawn_shell_task(id, (0, 0));
             }
-            ClientMessage::Data(data) => {
+            ClientMessage::Input(data) => {
                 // Process terminal input from browser and send to local shell
                 let input_data = TerminalInput {
                     id: data.id,
                     data: data.data,
-                    offset: data.seq,
+                    offset: data.offset,
                 };
 
                 let processed_data =
@@ -179,19 +178,10 @@ impl Controller {
                     sender.send(ShellData::Data(processed_data)).await.ok();
                 }
             }
-            ClientMessage::CreatedShell { id } => {
-                debug!("Browser requested shell creation: {}", id);
-                // Create a new shell task as requested by browser
-                self.spawn_shell_task(id, (0, 0));
-            }
-            ClientMessage::ClosedShell { id } => {
+            ClientMessage::CloseShell { id } => {
                 debug!("Browser requested shell closure: {}", id);
                 // Remove the shell as requested by browser
                 self.shells_tx.remove(&id);
-            }
-            ClientMessage::Error { message } => {
-                warn!("Received error from browser: {}", message);
-                // Handle browser-reported errors
             }
         }
     }
@@ -207,19 +197,19 @@ impl Controller {
         let output_tx = self.output_tx.clone();
         tokio::spawn(async move {
             // Notify that this shell was created
-            let _ = output_tx.send(ClientMessage::CreatedShell { id }).await;
+            let _ = output_tx.send(ServerMessage::CreatedShell { id }).await;
 
             // Run the shell and handle errors
             if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
                 let _ = output_tx
-                    .send(ClientMessage::Error {
+                    .send(ServerMessage::Error {
                         message: err.to_string(),
                     })
                     .await;
             }
 
             // Notify that this shell was closed
-            let _ = output_tx.send(ClientMessage::ClosedShell { id }).await;
+            let _ = output_tx.send(ServerMessage::ClosedShell { id }).await;
         });
     }
 

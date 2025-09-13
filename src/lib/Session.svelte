@@ -1,19 +1,12 @@
 <script lang="ts">
-  import {
-    onDestroy,
-    onMount,
-    tick,
-    beforeUpdate,
-    afterUpdate,
-    createEventDispatcher,
-  } from "svelte";
+  import { onDestroy, onMount, tick, beforeUpdate, afterUpdate } from "svelte";
   import { fade } from "svelte/transition";
-  import { debounce, throttle } from "lodash-es";
 
   import { Encrypt } from "./encrypt";
   import { createLock } from "./lock";
-  import { Srocket } from "./srocket";
-  import type { WsClient, WsServer, WsUser, WsWinsize } from "./protocol";
+  import { initApi } from "./sshx-api";
+  import type { SshxAPI } from "./sshx-api";
+  import type { SshxEvent, User, Winsize } from "./sshx-api";
   import { makeToast } from "./toast";
   import Chat, { type ChatMessage } from "./ui/Chat.svelte";
   import ChooseName from "./ui/ChooseName.svelte";
@@ -29,10 +22,6 @@
   import { arrangeNewTerminal } from "./arrange";
   import { settings } from "./settings";
   import { EyeIcon } from "svelte-feather-icons";
-
-  export let id: string;
-
-  const dispatch = createEventDispatcher<{ receiveName: string }>();
 
   // The magic numbers "left" and "top" are used to approximately center the
   // terminal at the time that it is first created.
@@ -94,7 +83,12 @@
   }
 
   let encrypt: Encrypt;
-  let srocket: Srocket<WsServer, WsClient> | null = null;
+  let sshxApi: SshxAPI | null = null;
+  let currentSessionId: string | null = null;
+
+  // Add these variables to store encrypted zeros
+  let encryptedZeros: Uint8Array;
+  let writeEncryptedZeros: Uint8Array | null;
 
   let connected = false;
   let exitReason: string | null = null;
@@ -106,8 +100,8 @@
   const chunknums: Record<number, number> = {};
   const locks: Record<number, any> = {};
   let userId = 0;
-  let users: [number, WsUser][] = [];
-  let shells: [number, WsWinsize][] = [];
+  let users: [number, User][] = [];
+  let shells: [number, Winsize][] = [];
   let subscriptions = new Set<number>();
 
   // May be undefined before `users` is first populated.
@@ -115,13 +109,13 @@
 
   let moving = -1; // Terminal ID that is being dragged.
   let movingOrigin = [0, 0]; // Coordinates of mouse at origin when drag started.
-  let movingSize: WsWinsize; // New [x, y] position of the dragged terminal.
+  let movingSize: Winsize; // New [x, y] position of the dragged terminal.
   let movingIsDone = false; // Moving finished but hasn't been acknowledged.
 
   let resizing = -1; // Terminal ID that is being resized.
   let resizingOrigin = [0, 0]; // Coordinates of top-left origin when resize started.
   let resizingCell = [0, 0]; // Pixel dimensions of a single terminal cell.
-  let resizingSize: WsWinsize; // Last resize message sent.
+  let resizingSize: Winsize; // Last resize message sent.
 
   let chatMessages: ChatMessage[] = [];
   let newMessages = false;
@@ -135,102 +129,166 @@
     const writePassword = window.location.hash?.slice(1).split(",")[1] ?? null;
 
     encrypt = await Encrypt.new(key);
-    const encryptedZeros = await encrypt.zeros();
+    encryptedZeros = await encrypt.zeros();
 
-    const writeEncryptedZeros = writePassword
+    writeEncryptedZeros = writePassword
       ? await (await Encrypt.new(writePassword)).zeros()
       : null;
 
-    srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
-      onMessage(message) {
-        if (message.hello) {
-          userId = message.hello[0];
-          dispatch("receiveName", message.hello[1]);
-          makeToast({
-            kind: "success",
-            message: `Connected to the server.`,
-          });
-          exitReason = null;
-        } else if (message.invalidAuth) {
-          exitReason =
-            "The URL is not correct, invalid end-to-end encryption key.";
-          srocket?.dispose();
-        } else if (message.chunks) {
-          let [id, seqnum, chunks] = message.chunks;
-          locks[id](async () => {
-            await tick();
-            chunknums[id] += chunks.length;
-            for (const data of chunks) {
-              const buf = await encrypt.segment(
-                0x100000000n | BigInt(id),
-                BigInt(seqnum),
-                data,
-              );
-              seqnum += data.length;
-              writers[id](new TextDecoder().decode(buf));
-            }
-          });
-        } else if (message.users) {
-          users = message.users;
-        } else if (message.userDiff) {
-          const [id, update] = message.userDiff;
-          users = users.filter(([uid]) => uid !== id);
-          if (update !== null) {
-            users = [...users, [id, update]];
-          }
-        } else if (message.shells) {
-          shells = message.shells;
-          if (movingIsDone) {
-            moving = -1;
-          }
-          for (const [id] of message.shells) {
-            if (!subscriptions.has(id)) {
-              chunknums[id] ??= 0;
-              locks[id] ??= createLock();
-              subscriptions.add(id);
-              srocket?.send({ subscribe: [id, chunknums[id]] });
-            }
-          }
-        } else if (message.hear) {
-          const [uid, name, msg] = message.hear;
-          chatMessages.push({ uid, name, msg, sentAt: new Date() });
-          chatMessages = chatMessages;
-          if (!showChat) newMessages = true;
-        } else if (message.shellLatency !== undefined) {
-          const shellLatency = Number(message.shellLatency);
-          shellLatencies = [...shellLatencies, shellLatency].slice(-10);
-        } else if (message.error) {
-          console.warn("Server error: " + message.error);
-        }
-      },
+    // Initialize the sshx API
+    try {
+      // const { initApi } = import("./sshx-api");
+      sshxApi = await initApi();
+    } catch (error) {
+      console.error("Failed to initialize sshx API:", error);
+      exitReason = "Failed to initialize P2P connection.";
+      return;
+    }
 
-      onConnect() {
-        srocket?.send({ authenticate: [encryptedZeros, writeEncryptedZeros] });
-        if ($settings.name) {
-          srocket?.send({ setName: $settings.name });
-        }
-        connected = true;
-      },
+    // Try to create or join session based on URL
+    const ticket = new URLSearchParams(window.location.search).get("ticket");
 
-      onDisconnect() {
-        connected = false;
-        subscriptions.clear();
-        users = [];
-        serverLatencies = [];
-        shellLatencies = [];
-      },
+    try {
+      if (ticket) {
+        currentSessionId = await sshxApi.joinSession(ticket);
+      } else {
+        currentSessionId = await sshxApi.createSession();
+        // Get the ticket for sharing
+        const newTicket = sshxApi.getSessionTicket(currentSessionId);
+        // Update URL with the new ticket
+        const url = new URL(window.location.href);
+        url.searchParams.set("ticket", newTicket);
+        window.history.pushState({}, "", url.toString());
+      }
 
-      onClose(event) {
-        if (event.code === 4404) {
-          exitReason = "Failed to connect: " + event.reason;
-        } else if (event.code === 4500) {
-          exitReason = "Internal server error: " + event.reason;
-        }
-      },
-    });
+      // Subscribe to session events
+      if (currentSessionId) {
+        sshxApi.subscribeToEvents(currentSessionId, handleEvent);
+      }
+    } catch (error) {
+      console.error("Failed to create/join session:", error);
+      exitReason = "Failed to connect to P2P session.";
+    }
   });
 
-  onDestroy(() => srocket?.dispose());
+  function handleEvent(event: SshxEvent) {
+    console.log("Received event:", event);
+    if (event.hello) {
+      // For P2P mode, we simulate the hello event
+      userId = Math.floor(Math.random() * 1000000);
+      connected = true;
+      exitReason = null;
+
+      // Create initial shell
+      setTimeout(() => {
+        if (connected) {
+          makeToast({
+            kind: "success",
+            message: `Connected to P2P network.`,
+          });
+        }
+      }, 100);
+    } else if (event.invalidAuth) {
+      exitReason = "The URL is not correct, invalid end-to-end encryption key.";
+      connected = false;
+    } else if (event.chunks) {
+      let [id, seqnum, chunks] = event.chunks;
+      if (writers[id]) {
+        locks[id](async () => {
+          await tick();
+          chunknums[id] += chunks.length;
+          for (const data of chunks) {
+            const dataArray =
+              data instanceof Uint8Array ? data : new Uint8Array(data);
+            const buf = await encrypt.segment(
+              0x100000000n | BigInt(id),
+              BigInt(seqnum),
+              dataArray,
+            );
+            seqnum += dataArray.length;
+            writers[id](new TextDecoder().decode(buf));
+          }
+        });
+      }
+    } else if (event.users) {
+      users = event.users;
+    } else if (event.userDiff) {
+      const [id, update] = event.userDiff;
+      users = users.filter(([uid]) => uid !== id);
+      if (update !== null) {
+        users = [...users, [id, update]];
+      }
+    } else if (event.shells) {
+      shells = event.shells;
+      if (movingIsDone) {
+        moving = -1;
+      }
+      for (const [id] of event.shells) {
+        if (!subscriptions.has(id)) {
+          chunknums[id] ??= 0;
+          locks[id] ??= createLock();
+          subscriptions.add(id);
+          // For P2P mode, we don't need to send subscribe messages
+          // The shell will automatically start receiving data
+        }
+      }
+    } else if (event.hear) {
+      const [uid, name, msg] = event.hear;
+      chatMessages.push({ uid, name, msg, sentAt: new Date() });
+      chatMessages = chatMessages;
+      if (!showChat) newMessages = true;
+    } else if (event.shellLatency !== undefined) {
+      const shellLatency = Number(event.shellLatency);
+      shellLatencies = [...shellLatencies, shellLatency].slice(-10);
+    } else if (event.error) {
+      console.warn("P2P error: " + event.error);
+    }
+  }
+
+  // Helper function to send commands
+  async function sendCommand(command: any): Promise<void> {
+    if (!currentSessionId || !sshxApi) {
+      console.warn("Cannot send command: session not available");
+      return;
+    }
+
+    // Convert command to ClientMessage format and send as binary data
+    let clientMessage;
+
+    if (command.create) {
+      // Send ClientMessage::CreateShell to request shell creation
+      // Generate a valid u32 ID (max 4,294,967,295)
+      const id = Math.floor(Math.random() * 4294967295);
+      clientMessage = {
+        type: "CreateShell",
+        data: {
+          id: id,
+        },
+      };
+      console.log("Create shell request in session " + id);
+    } else if (command.close) {
+      // Send ClientMessage::CloseShell to request shell closure
+      clientMessage = {
+        type: "CloseShell",
+        data: {
+          id: command.close,
+        },
+      };
+    } else {
+      console.warn("Unknown command type:", command);
+      return;
+    }
+
+    const encoder = new TextEncoder();
+    const data = encoder.encode(JSON.stringify(clientMessage));
+    await sshxApi.sendData(currentSessionId, data);
+  }
+
+  onDestroy(() => {
+    if (currentSessionId && sshxApi) {
+      sshxApi.closeSession(currentSessionId);
+    }
+  });
 
   // Ping/Pong events removed - no periodic ping needed
 
@@ -246,19 +304,20 @@
   }
 
   $: if ($settings.name) {
-    srocket?.send({ setName: $settings.name });
+    sendCommand({ setName: $settings.name });
   }
 
   let counter = 0n;
 
   async function handleCreate() {
-    if (hasWriteAccess === false) {
-      makeToast({
-        kind: "info",
-        message: "You are in read-only mode and cannot create new terminals.",
-      });
-      return;
-    }
+    console.log("Create");
+    // if (hasWriteAccess === false) {
+    //   makeToast({
+    //     kind: "info",
+    //     message: "You are in read-only mode and cannot create new terminals.",
+    //   });
+    //   return;
+    // }
     if (shells.length >= 14) {
       makeToast({
         kind: "error",
@@ -273,7 +332,7 @@
       height: termWrappers[id].clientHeight,
     }));
     const { x, y } = arrangeNewTerminal(existing);
-    srocket?.send({ create: [x, y] });
+    sendCommand({ create: [x, y] });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
@@ -287,7 +346,21 @@
     const offset = counter;
     counter += BigInt(data.length); // Must increment before the `await`.
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
-    srocket?.send({ data: [id, encrypted, offset] });
+
+    // Send encrypted data through P2P client as ClientMessage::Data
+    if (currentSessionId && sshxApi) {
+      const message = {
+        type: "Data",
+        data: {
+          id: id,
+          data: Array.from(encrypted), // Convert Uint8Array to array for JSON serialization
+          seq: Number(offset),
+        },
+      };
+      const encoder = new TextEncoder();
+      const dataToSend = encoder.encode(JSON.stringify(message));
+      await sshxApi.sendData(currentSessionId, dataToSend);
+    }
   }
 
   // Stupid hack to preserve input focus when terminals are reordered.
@@ -301,82 +374,6 @@
   afterUpdate(() => {
     if (activeElement instanceof HTMLElement) activeElement.focus();
   });
-
-  // Global mouse handler logic follows, attached to the window element for smoothness.
-  onMount(() => {
-    // 50 milliseconds between successive terminal move updates.
-    const sendMove = throttle((message: WsClient) => {
-      srocket?.send(message);
-    }, 50);
-
-    // 80 milliseconds between successive cursor updates.
-    const sendCursor = throttle((message: WsClient) => {
-      srocket?.send(message);
-    }, 80);
-
-    function handleMouse(event: MouseEvent) {
-      if (moving !== -1 && !movingIsDone) {
-        const [x, y] = normalizePosition(event);
-        movingSize = {
-          ...movingSize,
-          x: Math.round(x - movingOrigin[0]),
-          y: Math.round(y - movingOrigin[1]),
-        };
-        sendMove({ move: [moving, movingSize] });
-      }
-
-      if (resizing !== -1) {
-        const cols = Math.max(
-          Math.floor((event.pageX - resizingOrigin[0]) / resizingCell[0]),
-          TERM_MIN_COLS, // Minimum number of columns.
-        );
-        const rows = Math.max(
-          Math.floor((event.pageY - resizingOrigin[1]) / resizingCell[1]),
-          TERM_MIN_ROWS, // Minimum number of rows.
-        );
-        if (rows !== resizingSize.rows || cols !== resizingSize.cols) {
-          resizingSize = { ...resizingSize, rows, cols };
-          srocket?.send({ move: [resizing, resizingSize] });
-        }
-      }
-
-      sendCursor({ setCursor: normalizePosition(event) });
-    }
-
-    function handleMouseEnd(event: MouseEvent) {
-      if (moving !== -1) {
-        movingIsDone = true;
-        sendMove.cancel();
-        srocket?.send({ move: [moving, movingSize] });
-      }
-
-      if (resizing !== -1) {
-        resizing = -1;
-      }
-
-      if (event.type === "mouseleave") {
-        sendCursor.cancel();
-        srocket?.send({ setCursor: null });
-      }
-    }
-
-    window.addEventListener("mousemove", handleMouse);
-    window.addEventListener("mouseup", handleMouseEnd);
-    document.body.addEventListener("mouseleave", handleMouseEnd);
-    return () => {
-      window.removeEventListener("mousemove", handleMouse);
-      window.removeEventListener("mouseup", handleMouseEnd);
-      document.body.removeEventListener("mouseleave", handleMouseEnd);
-    };
-  });
-
-  let focused: number[] = [];
-  $: setFocus(focused);
-
-  // Wait a small amount of time, since blur events happen before focus events.
-  const setFocus = debounce((focused: number[]) => {
-    srocket?.send({ setFocus: focused[0] ?? null });
-  }, 20);
 </script>
 
 <!-- Wheel handler stops native macOS Chrome zooming on pinch. -->
@@ -394,6 +391,7 @@
       {hasWriteAccess}
       on:create={handleCreate}
       on:chat={() => {
+        console.log("Chat");
         showChat = !showChat;
         newMessages = false;
       }}
@@ -411,8 +409,8 @@
           status={connected
             ? "connected"
             : exitReason
-            ? "no-shell"
-            : "no-server"}
+              ? "no-shell"
+              : "no-server"}
           serverLatency={integerMedian(serverLatencies)}
           shellLatency={integerMedian(shellLatencies)}
         />
@@ -427,7 +425,9 @@
       <Chat
         {userId}
         messages={chatMessages}
-        on:chat={(event) => srocket?.send({ chat: event.detail })}
+        on:chat={(event) => {
+          sendCommand({ chat: event.detail });
+        }}
         on:close={() => (showChat = false)}
       />
     </div>
@@ -453,7 +453,7 @@
       <div class="text-red-400">{exitReason}</div>
     {:else if connected}
       <div class="flex items-center">
-        <div class="text-green-400">You are connected!</div>
+        <div class="text-green-400">You are connected via P2P!</div>
         {#if userId && hasWriteAccess === false}
           <div
             class="bg-yellow-900 text-yellow-200 px-1 py-0.5 rounded ml-3 inline-flex items-center gap-1"
@@ -464,7 +464,7 @@
         {/if}
       </div>
     {:else}
-      <div class="text-yellow-400">Connecting…</div>
+      <div class="text-yellow-400">Connecting to P2P network…</div>
     {/if}
 
     <div class="mt-4">
@@ -491,25 +491,27 @@
           bind:termEl={termElements[id]}
           on:data={({ detail: data }) =>
             hasWriteAccess && handleInput(id, data)}
-          on:close={() => srocket?.send({ close: id })}
+          on:close={() => {
+            sendCommand({ close: id });
+          }}
           on:shrink={() => {
             if (!hasWriteAccess) return;
             const rows = Math.max(ws.rows - 4, TERM_MIN_ROWS);
             const cols = Math.max(ws.cols - 10, TERM_MIN_COLS);
             if (rows !== ws.rows || cols !== ws.cols) {
-              srocket?.send({ move: [id, { ...ws, rows, cols }] });
+              sendCommand({ move: [id, { ...ws, rows, cols }] });
             }
           }}
           on:expand={() => {
             if (!hasWriteAccess) return;
             const rows = ws.rows + 4;
             const cols = ws.cols + 10;
-            srocket?.send({ move: [id, { ...ws, rows, cols }] });
+            sendCommand({ move: [id, { ...ws, rows, cols }] });
           }}
           on:bringToFront={() => {
             if (!hasWriteAccess) return;
             showNetworkInfo = false;
-            srocket?.send({ move: [id, null] });
+            sendCommand({ move: [id, null] });
           }}
           on:startMove={({ detail: event }) => {
             if (!hasWriteAccess) return;
@@ -518,13 +520,6 @@
             movingOrigin = [x - ws.x, y - ws.y];
             movingSize = ws;
             movingIsDone = false;
-          }}
-          on:focus={() => {
-            if (!hasWriteAccess) return;
-            focused = [...focused, id];
-          }}
-          on:blur={() => {
-            focused = focused.filter((i) => i !== id);
           }}
         />
 
