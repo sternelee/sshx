@@ -4,7 +4,10 @@
       "Bash(cargo check:*)",
       "Bash(npm run check:*)",
       "Bash(npm run build:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(tree:*)",
+      "Bash(fd:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

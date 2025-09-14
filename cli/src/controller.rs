@@ -95,15 +95,20 @@ impl Controller {
             tokio::select! {
                 // 1. Handle outgoing messages from local shells to send to browser
                 Some(msg) = self.output_rx.recv() => {
+                    println!("📤 CLI sending ServerMessage to browser: {:?}", msg);
                     // Send ServerMessage back to browser clients
                     match serde_json::to_vec(&msg) {
                         Ok(msg_bytes) => {
+                            println!("🔄 Serialized message: {} bytes", msg_bytes.len());
+                            println!("📋 Message content: {}", String::from_utf8_lossy(&msg_bytes));
                             if let Err(e) = self.p2p_session.broadcast(msg_bytes).await {
-                                warn!("Failed to send message to browser: {}", e);
+                                warn!("❌ Failed to send message to browser: {}", e);
+                            } else {
+                                println!("✅ Successfully broadcasted message to P2P network");
                             }
                         }
                         Err(e) => {
-                            warn!("Failed to serialize ServerMessage: {}", e);
+                            warn!("❌ Failed to serialize ServerMessage: {}", e);
                         }
                     }
                 }
@@ -116,22 +121,23 @@ impl Controller {
                         std::future::pending().await
                     }
                 } => {
-                    debug!("Received P2P event: {:?}", event);
+                    println!("📨 CLI received P2P event: {:?}", event);
                     match event {
                         iroh_gossip::api::Event::Received(msg) => {
-                            debug!("Received message from peer: {} bytes", msg.content.len());
-                            debug!("Message content preview: {:?}", &msg.content[..msg.content.len().min(100)]);
+                            println!("🟢 Received message from browser: {} bytes", msg.content.len());
+                            println!("🔍 Message content preview: {:?}", 
+                                String::from_utf8_lossy(&msg.content[..msg.content.len().min(200)]));
                             // Handle ClientMessage from browser clients
                             self.handle_p2p_message(&msg.content).await;
                         }
                         iroh_gossip::api::Event::NeighborUp(node_id) => {
-                            debug!("Browser client connected: {}", node_id);
+                            println!("🟢 Browser client connected: {}", node_id);
                         }
                         iroh_gossip::api::Event::NeighborDown(node_id) => {
-                            debug!("Browser client disconnected: {}", node_id);
+                            println!("🔴 Browser client disconnected: {}", node_id);
                         }
                         _ => {
-                            debug!("Received other P2P event: {:?}", event);
+                            println!("🟡 Received other P2P event: {:?}", event);
                         }
                     }
                 }
@@ -141,29 +147,34 @@ impl Controller {
 
     /// Handle incoming P2P messages from browser clients
     async fn handle_p2p_message(&mut self, data: &[u8]) {
+        println!("🔧 Parsing ClientMessage from {} bytes", data.len());
         match serde_json::from_slice::<ClientMessage>(data) {
             Ok(client_msg) => {
+                println!("✅ Successfully parsed ClientMessage: {:?}", client_msg);
                 self.handle_client_message_from_browser(client_msg).await;
             }
             Err(e) => {
                 warn!(
-                    "Failed to deserialize P2P message: {} ({} bytes)",
+                    "❌ Failed to deserialize P2P message: {} ({} bytes)",
                     e,
                     data.len()
                 );
+                println!("📋 Raw data: {:?}", String::from_utf8_lossy(data));
             }
         }
     }
 
     /// Handle ClientMessage received from browser clients
     async fn handle_client_message_from_browser(&mut self, message: ClientMessage) {
+        println!("🎯 Processing ClientMessage: {:?}", message);
         match message {
             ClientMessage::CreateShell { id } => {
-                debug!("Browser requested shell creation: {}", id);
+                println!("🐚 Browser requested shell creation: {}", id);
                 // Create a new shell task as requested by browser
                 self.spawn_shell_task(id, (0, 0));
             }
             ClientMessage::Input(data) => {
+                println!("⌨️ Browser sent input for shell {}: {} bytes", data.id, data.data.len());
                 // Process terminal input from browser and send to local shell
                 let input_data = TerminalInput {
                     id: data.id,
@@ -175,11 +186,17 @@ impl Controller {
                     self.encrypt
                         .segment(0x200000000, input_data.offset, &input_data.data);
                 if let Some(sender) = self.shells_tx.get(&input_data.id) {
-                    sender.send(ShellData::Data(processed_data)).await.ok();
+                    if sender.send(ShellData::Data(processed_data)).await.is_ok() {
+                        println!("✅ Input forwarded to shell {}", input_data.id);
+                    } else {
+                        println!("❌ Failed to forward input to shell {}", input_data.id);
+                    }
+                } else {
+                    println!("⚠️ Shell {} not found for input", input_data.id);
                 }
             }
             ClientMessage::CloseShell { id } => {
-                debug!("Browser requested shell closure: {}", id);
+                println!("❌ Browser requested shell closure: {}", id);
                 // Remove the shell as requested by browser
                 self.shells_tx.remove(&id);
             }
@@ -188,6 +205,7 @@ impl Controller {
 
     /// Entry point to start a new terminal task on the client.
     fn spawn_shell_task(&mut self, id: Sid, _center: (i32, i32)) {
+        println!("🚀 Spawning shell task for ID: {}", id);
         let (shell_tx, shell_rx) = mpsc::channel(16);
         let opt = self.shells_tx.insert(id, shell_tx);
         debug_assert!(opt.is_none(), "shell ID cannot be in existing tasks");
@@ -196,20 +214,26 @@ impl Controller {
         let encrypt = self.encrypt.clone();
         let output_tx = self.output_tx.clone();
         tokio::spawn(async move {
+            println!("🎭 Shell task {} starting...", id);
+            
             // Notify that this shell was created
-            let _ = output_tx.send(ServerMessage::CreatedShell { id }).await;
+            let created_msg = ServerMessage::CreatedShell { id };
+            println!("📢 Sending CreatedShell message: {:?}", created_msg);
+            let _ = output_tx.send(created_msg).await;
 
             // Run the shell and handle errors
             if let Err(err) = runner.run(id, encrypt, shell_rx, output_tx.clone()).await {
-                let _ = output_tx
-                    .send(ServerMessage::Error {
-                        message: err.to_string(),
-                    })
-                    .await;
+                let error_msg = ServerMessage::Error {
+                    message: err.to_string(),
+                };
+                println!("🔥 Shell error, sending: {:?}", error_msg);
+                let _ = output_tx.send(error_msg).await;
             }
 
             // Notify that this shell was closed
-            let _ = output_tx.send(ServerMessage::ClosedShell { id }).await;
+            let closed_msg = ServerMessage::ClosedShell { id };
+            println!("🏁 Shell {} finished, sending: {:?}", id, closed_msg);
+            let _ = output_tx.send(closed_msg).await;
         });
     }
 

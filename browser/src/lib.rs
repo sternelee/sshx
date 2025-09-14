@@ -93,13 +93,35 @@ impl Session {
     async fn from_p2p_session(mut p2p_session: P2pSession) -> Result<Self, JsError> {
         let receiver = p2p_session.take_receiver().map(|receiver| {
             ReadableStream::from_stream(receiver.map(|event| {
-                match &event {
-                    Ok(e) => tracing::debug!("Received P2P event: {:?}", e),
-                    Err(e) => tracing::error!("P2P event error: {}", e),
+                match event {
+                    Ok(e) => {
+                        tracing::debug!("Received P2P event: {:?}", e);
+                        match e {
+                            iroh_gossip::api::Event::Received(msg) => {
+                                // Extract the actual message content from Received event
+                                tracing::info!("🟢 Received P2P message: {} bytes from peer", msg.content.len());
+                                tracing::info!("🔍 Message content preview: {:?}", 
+                                    String::from_utf8_lossy(&msg.content[..msg.content.len().min(200)]));
+                                tracing::info!("📋 Raw bytes: {:?}", &msg.content[..msg.content.len().min(50)]);
+                                
+                                // Convert Bytes to Vec<u8> then to Uint8Array JsValue
+                                let bytes: &[u8] = &msg.content;
+                                let array = js_sys::Uint8Array::from(bytes);
+                                Ok(array.into())
+                            }
+                            _ => {
+                                // For other events, return empty Uint8Array
+                                tracing::info!("🟡 Received P2P event (not message): {:?}", e);
+                                let array = js_sys::Uint8Array::new_with_length(0);
+                                Ok(array.into())
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("P2P event error: {}", e);
+                        Err(JsValue::from_str(&e.to_string()))
+                    }
                 }
-                event
-                    .map_err(|err| JsValue::from_str(&err.to_string()))
-                    .map(|event| serde_wasm_bindgen::to_value(&event).unwrap())
             }))
             .into_raw()
         });

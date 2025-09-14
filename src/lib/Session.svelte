@@ -147,6 +147,7 @@
 
     // Try to create or join session based on URL
     const ticket = new URLSearchParams(window.location.search).get("ticket");
+    console.log("ticket", ticket);
 
     try {
       if (ticket) {
@@ -161,6 +162,7 @@
         window.history.pushState({}, "", url.toString());
       }
 
+      console.log("Created session:", currentSessionId);
       // Subscribe to session events
       if (currentSessionId) {
         sshxApi.subscribeToEvents(currentSessionId, handleEvent);
@@ -186,6 +188,8 @@
             kind: "success",
             message: `Connected to P2P network.`,
           });
+          // Auto-create first shell for P2P session
+          handleCreate();
         }
       }, 100);
     } else if (event.invalidAuth) {
@@ -347,14 +351,14 @@
     counter += BigInt(data.length); // Must increment before the `await`.
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
 
-    // Send encrypted data through P2P client as ClientMessage::Data
+    // Send encrypted data through P2P client as ClientMessage::Input
     if (currentSessionId && sshxApi) {
       const message = {
-        type: "Data",
+        type: "Input",
         data: {
           id: id,
           data: Array.from(encrypted), // Convert Uint8Array to array for JSON serialization
-          seq: Number(offset),
+          offset: Number(offset),
         },
       };
       const encoder = new TextEncoder();

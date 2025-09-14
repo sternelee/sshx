@@ -1,5 +1,5 @@
 <script lang="ts">
-  import P2PSession from "$lib/P2PSession.svelte";
+  import Session from "$lib/Session.svelte";
 
   let title: string = "P2P Remote Terminal | sshx";
 </script>
@@ -14,7 +14,7 @@
   </style>
 </svelte:head>
 
-<P2PSession
+<Session
   id="p2p-main"
   on:receiveName={({ detail: sessionName }) => {
     if (sessionName) {
