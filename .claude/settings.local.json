@@ -5,7 +5,9 @@
       "Bash(git add:*)",
       "mcp__mcp-hub__context7-resolve-library-id",
       "mcp__mcp-hub__context7-get-library-docs",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(find:*)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

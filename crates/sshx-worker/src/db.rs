@@ -38,7 +38,7 @@ pub struct Session {
     pub metadata: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SessionStatus {
     Active,
     Closed,
@@ -327,6 +327,23 @@ impl D1Store {
             .db
             .prepare(query)
             .bind(&[Utc::now().to_rfc3339().into(), session_id.into()])?
+            .run()
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_session_metadata(
+        &self,
+        session_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        let query = "UPDATE sessions SET metadata = ?1 WHERE id = ?2";
+
+        let _result = self
+            .db
+            .prepare(query)
+            .bind(&[metadata.to_string().into(), session_id.into()])?
             .run()
             .await?;
 

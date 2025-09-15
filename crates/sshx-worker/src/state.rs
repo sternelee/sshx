@@ -6,8 +6,9 @@ use worker::{D1Database, Env};
 pub struct CloudflareServerState {
     pub db: Arc<D1Store>,
     pub secret: String,
-    pub override_origin: Option<String>,
+    pub _override_origin: Option<String>,
     pub host: Option<String>,
+    pub durable_objects: worker::ObjectNamespace,
 }
 
 impl CloudflareServerState {
@@ -22,15 +23,19 @@ impl CloudflareServerState {
             .map(|s| s.to_string())
             .unwrap_or_else(|_| "default-secret".to_string());
 
-        let override_origin = env.var("SSHX_OVERRIDE_ORIGIN").map(|v| v.to_string()).ok();
+        let _override_origin = env.var("SSHX_OVERRIDE_ORIGIN").map(|v| v.to_string()).ok();
 
         let host = env.var("SSHX_HOST").map(|v| v.to_string()).ok();
+
+        // Get Durable Object namespace
+        let durable_objects = env.durable_object("SSHX_SESSIONS")?;
 
         Ok(Self {
             db,
             secret,
-            override_origin,
+            _override_origin,
             host,
+            durable_objects,
         })
     }
 
@@ -42,11 +47,16 @@ impl CloudflareServerState {
         &self.secret
     }
 
-    pub fn override_origin(&self) -> Option<&str> {
-        self.override_origin.as_deref()
-    }
-
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
+    }
+
+    pub fn durable_object(&self, session_name: &str) -> worker::ObjectId<'_> {
+        self.durable_objects
+            .id_from_name(session_name)
+            .unwrap_or_else(|_| {
+                // Fallback to a default ID if name generation fails
+                self.durable_objects.id_from_name("default").unwrap()
+            })
     }
 }

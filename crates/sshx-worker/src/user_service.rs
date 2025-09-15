@@ -292,7 +292,7 @@ impl UserService {
         Ok((user, api_key_record))
     }
 
-    async fn verify_auth_token(&self, token: &str) -> Result<User> {
+    pub async fn verify_auth_token(&self, token: &str) -> Result<User> {
         let decoding_key = DecodingKey::from_secret(self.state.secret().as_bytes());
         let validation = Validation::default();
 

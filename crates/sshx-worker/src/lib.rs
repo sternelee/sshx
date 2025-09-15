@@ -4,15 +4,26 @@ use tracing::{error, info};
 use worker::*;
 
 mod db;
+mod durable_object;
+mod protocol;
+mod session;
 mod state;
 mod user_service;
+mod websocket;
 
+use base64::prelude::*;
+use bytes::Bytes;
+use session::{SessionManager, SessionMetadata};
 use state::CloudflareServerState;
 use user_service::{
     CloseUserSessionRequest, CloseUserSessionResponse, DeleteApiKeyRequest, DeleteApiKeyResponse,
     GenerateApiKeyRequest, ListApiKeysRequest, ListUserSessionsRequest, LoginRequest,
     RegisterRequest, UserService,
 };
+use websocket::WebSocketHandler;
+
+// Export the Durable Object
+pub use durable_object::SshxSession;
 
 #[derive(Serialize)]
 struct ErrorResponse {
@@ -50,6 +61,31 @@ fn success_response<T: Serialize>(data: T) -> Response {
 
 #[derive(Deserialize)]
 struct AuthTokenRequest {
+    auth_token: String,
+}
+
+#[derive(Deserialize)]
+struct CreateSessionRequest {
+    name: String,
+    encrypted_zeros: String,             // Base64 encoded
+    write_password_hash: Option<String>, // Base64 encoded
+    api_key: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreateSessionResponse {
+    name: String,
+    url: String,
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct GetSessionInfoRequest {
+    _auth_token: String,
+}
+
+#[derive(Deserialize)]
+struct CloseSessionRequest {
     auth_token: String,
 }
 
@@ -218,9 +254,77 @@ async fn handle_close_user_session(
     }
 }
 
+async fn handle_get_session_info(
+    req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
+    let url = req.url()?;
+    let path_segments: Vec<&str> = url.path().split('/').collect();
+
+    // Expected path: /api/sessions/{name}/info
+    let session_name = if path_segments.len() >= 4 {
+        path_segments[3].to_string()
+    } else {
+        return Ok(error_response("Invalid session name", 400));
+    };
+
+    let mut req = req;
+    let _auth_request: GetSessionInfoRequest = req.json().await?;
+    let session_manager = SessionManager::new(Arc::clone(&state));
+
+    match session_manager.get_session_info(&session_name).await {
+        Ok(Some(info)) => Ok(success_response(info)),
+        Ok(None) => Ok(error_response("Session not found", 404)),
+        Err(err) => {
+            error!("Failed to get session info: {}", err);
+            Ok(error_response(&err.to_string(), 400))
+        }
+    }
+}
+
+async fn handle_close_session(
+    req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
+    let url = req.url()?;
+    let path_segments: Vec<&str> = url.path().split('/').collect();
+
+    // Expected path: /api/sessions/{name}/close
+    let session_name = if path_segments.len() >= 4 {
+        path_segments[3].to_string()
+    } else {
+        return Ok(error_response("Invalid session name", 400));
+    };
+
+    let mut req = req;
+    let close_request: CloseSessionRequest = req.json().await?;
+    let session_manager = SessionManager::new(Arc::clone(&state));
+
+    // Verify auth token and get user ID
+    let user_service = UserService::new(Arc::clone(&state));
+    let user_id = match user_service
+        .verify_auth_token(&close_request.auth_token)
+        .await
+    {
+        Ok(user) => user.id,
+        Err(_) => return Ok(error_response("Invalid auth token", 401)),
+    };
+
+    match session_manager.close_session(&session_name).await {
+        Ok(_) => {
+            info!("Session {} closed by user {}", session_name, user_id);
+            Ok(success_response(serde_json::json!({"success": true})))
+        }
+        Err(err) => {
+            error!("Failed to close session: {}", err);
+            Ok(error_response(&err.to_string(), 400))
+        }
+    }
+}
+
 async fn handle_websocket(
     req: Request,
-    _state: Arc<CloudflareServerState>,
+    state: Arc<CloudflareServerState>,
 ) -> worker::Result<Response> {
     let url = req.url()?;
     let path_segments: Vec<&str> = url.path().split('/').collect();
@@ -233,7 +337,98 @@ async fn handle_websocket(
     };
 
     info!("WebSocket connection requested for session: {}", name);
-    Ok(Response::error("WebSocket not implemented yet", 501)?)
+
+    // Check if this is a WebSocket upgrade request
+    if req.headers().get("upgrade")?.as_deref() == Some("websocket") {
+        let handler = WebSocketHandler::new(state);
+        handler.handle_websocket_upgrade(req, name).await
+    } else {
+        Ok(error_response("WebSocket upgrade required", 400))
+    }
+}
+
+async fn handle_create_session(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
+    let create_request: CreateSessionRequest = req.json().await?;
+    let session_manager = SessionManager::new(Arc::clone(&state));
+
+    // Check if session already exists
+    if session_manager
+        .is_session_active(&create_request.name)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(error_response("Session already exists", 409));
+    }
+
+    // Decode base64 encrypted zeros
+    let encrypted_zeros = match BASE64_STANDARD.decode(&create_request.encrypted_zeros) {
+        Ok(bytes) => Bytes::from(bytes),
+        Err(_) => return Ok(error_response("Invalid encrypted_zeros format", 400)),
+    };
+
+    // Decode base64 write password hash if provided
+    let write_password_hash = if let Some(hash_b64) = create_request.write_password_hash {
+        match BASE64_STANDARD.decode(&hash_b64) {
+            Ok(bytes) => Some(Bytes::from(bytes)),
+            Err(_) => return Ok(error_response("Invalid write_password_hash format", 400)),
+        }
+    } else {
+        None
+    };
+
+    // Verify API key if provided
+    let user_id = if let Some(api_key) = create_request.api_key {
+        let user_service = UserService::new(Arc::clone(&state));
+        match user_service.verify_api_key(&api_key).await {
+            Ok((user, _)) => Some(user.id),
+            Err(_) => return Ok(error_response("Invalid API key", 401)),
+        }
+    } else {
+        None
+    };
+
+    // Create session metadata
+    let metadata = SessionMetadata {
+        encrypted_zeros,
+        name: create_request.name.clone(),
+        write_password_hash,
+    };
+
+    // Create session
+    match session_manager
+        .create_session(&create_request.name, metadata)
+        .await
+    {
+        Ok(_) => {
+            // Generate session token (simplified version)
+            let token = format!("token_{}", create_request.name);
+
+            // Get origin from request or use default
+            let origin = req
+                .headers()
+                .get("origin")?
+                .unwrap_or("https://sshx.io".to_string());
+            let url = format!("{}/s/{}", origin, create_request.name);
+
+            info!(
+                "Created session: {} for user: {:?}",
+                create_request.name, user_id
+            );
+
+            Ok(success_response(CreateSessionResponse {
+                name: create_request.name,
+                url,
+                token,
+            }))
+        }
+        Err(err) => {
+            error!("Failed to create session: {}", err);
+            Ok(error_response(&err.to_string(), 400))
+        }
+    }
 }
 
 async fn route_request(
@@ -257,6 +452,13 @@ async fn route_request(
             if path.starts_with("/api/auth/sessions/") && path.ends_with("/close") =>
         {
             handle_close_user_session(req, state).await
+        }
+        (Method::Post, "/api/sessions/create") => handle_create_session(req, state).await,
+        (Method::Post, path) if path.starts_with("/api/sessions/") && path.ends_with("/info") => {
+            handle_get_session_info(req, state).await
+        }
+        (Method::Post, path) if path.starts_with("/api/sessions/") && path.ends_with("/close") => {
+            handle_close_session(req, state).await
         }
         (_, path) if path.starts_with("/api/s/") => handle_websocket(req, state).await,
         _ => Ok(Response::error("Not found", 404)?),
@@ -283,4 +485,3 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Respo
     // Route the request
     route_request(req, state).await
 }
-

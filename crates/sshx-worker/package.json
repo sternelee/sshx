@@ -4,13 +4,23 @@
   "description": "sshx server for Cloudflare Workers with D1 database",
   "main": "build/worker/shim.mjs",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --local",
+    "dev:remote": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
     "build": "worker-build --release",
     "preview": "wrangler preview",
     "tail": "wrangler tail",
     "db:init": "wrangler d1 execute sshx --file=schema.sql",
-    "db:migrate": "wrangler d1 execute sshx --file=migrations.sql"
+    "db:init:local": "wrangler d1 execute sshx --local --file=schema.sql",
+    "db:migrate": "wrangler d1 execute sshx --file=migrations.sql",
+    "db:query": "wrangler d1 query sshx",
+    "db:backup": "wrangler d1 backup create sshx",
+    "logs": "wrangler tail --format=pretty",
+    "test": "cargo test",
+    "check": "cargo check",
+    "fmt": "cargo fmt",
+    "clippy": "cargo clippy"
   },
   "devDependencies": {
     "wrangler": "^3.0.0"
@@ -25,3 +35,4 @@
   "author": "sshx contributors",
   "license": "MIT"
 }
+

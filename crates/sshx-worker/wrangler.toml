@@ -43,15 +43,13 @@ binding = "SESSIONS_CACHE"
 id = "your-sessions-kv-namespace-id"
 preview_id = "your-preview-sessions-kv-namespace-id"
 
-# Optional: Durable Objects (if needed for real-time features)
-# [durable_objects]
-# bindings = [
-#   { name = "SSHX_SESSION", class_name = "SshxSession" }
-# ]
-#
-# [[migrations]]
-# tag = "v1"
-# new_classes = ["SshxSession"]
+# Durable Objects for real-time session coordination
+[durable_objects]
+bindings = [{ name = "SSHX_SESSION", class_name = "SshxSession" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SshxSession"]
 
 # Optional: R2 buckets (if needed for file storage)
 # [[r2_buckets]]
