@@ -313,51 +313,58 @@ impl SessionManager {
         db.create_session(name, None, None, self.state.host())
             .await?;
 
-        // Store session state in KV (if available) or as metadata in D1
+        // Store session state in KV
         let session_state = SessionState::new(metadata);
         self.save_session_state(name, &session_state).await?;
 
         Ok(())
     }
 
-    /// Get session state.
+    /// Get session state from KV.
     pub async fn get_session_state(&self, name: &str) -> Result<Option<SessionState>> {
-        // Try to load from KV first, then fall back to D1 metadata
-        // For now, we'll use a simple approach with D1 metadata
-        let db = self.state.db();
-        if let Some(session) = db.get_session_by_name(name).await? {
-            // Try to deserialize session state from metadata
-            if let Ok(state) = serde_json::from_value::<SessionState>(session.metadata) {
-                return Ok(Some(state));
+        let kv_key = format!("session:{}", name);
+
+        match self.state.kv_store.get(&kv_key).text().await {
+            Ok(Some(json_str)) => match serde_json::from_str::<SessionState>(&json_str) {
+                Ok(state) => Ok(Some(state)),
+                Err(e) => {
+                    console_log!("Failed to deserialize session state from KV: {}", e);
+                    Ok(None)
+                }
+            },
+            Ok(None) => Ok(None),
+            Err(e) => {
+                console_log!("Failed to get session state from KV: {}", e);
+                Ok(None)
             }
         }
-        Ok(None)
     }
 
-    /// Save session state.
+    /// Save session state to KV.
     pub async fn save_session_state(&self, name: &str, state: &SessionState) -> Result<()> {
-        // Store the session state in the D1 metadata field
-        let db = self.state.db();
+        let kv_key = format!("session:{}", name);
+        let json_str = serde_json::to_string(state)?;
 
-        // First get the session to get its ID
-        if let Some(session) = db.get_session_by_name(name).await? {
-            // Update session metadata with the serialized state
-            let metadata_json = serde_json::to_value(state)?;
+        // Store in KV with expiration (e.g., 24 hours)
+        let expiration_ttl = 24 * 60 * 60;
+        let json_len = json_str.len();
+        let put_op = match self.state.kv_store.put(&kv_key, json_str) {
+            Ok(op) => op,
+            Err(e) => return Err(anyhow!("Failed to create KV put operation: {:?}", e)),
+        };
 
-            db.update_session_metadata(&session.id, &metadata_json)
-                .await?;
-
-            // Also update the activity timestamp
-            db.update_session_activity(&session.id).await?;
-
-            console_log!(
-                "Saved session state for {}: {} bytes",
-                name,
-                serde_json::to_string(state)?.len()
-            );
-        } else {
-            console_log!("Failed to save session state: session not found");
+        match put_op.expiration_ttl(expiration_ttl).execute().await {
+            Ok(_) => {}
+            Err(e) => return Err(anyhow!("Failed to store session state in KV: {:?}", e)),
         }
+
+        // Also update activity in D1 for tracking
+        let db = self.state.db();
+        if let Some(session) = db.get_session_by_name(name).await? {
+            db.update_session_activity(&session.id).await?;
+        }
+
+        console_log!("Saved session state for {}: {} bytes to KV", name, json_len);
 
         Ok(())
     }
@@ -378,6 +385,14 @@ impl SessionManager {
         } else {
             console_log!("Session not found for closing: {}", name);
         }
+
+        // Remove session state from KV
+        let kv_key = format!("session:{}", name);
+        match self.state.kv_store.delete(&kv_key).await {
+            Ok(_) => {}
+            Err(e) => return Err(anyhow!("Failed to remove session state from KV: {:?}", e)),
+        }
+        console_log!("Removed session state from KV: {}", name);
 
         Ok(())
     }

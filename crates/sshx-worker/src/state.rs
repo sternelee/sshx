@@ -9,6 +9,7 @@ pub struct CloudflareServerState {
     pub _override_origin: Option<String>,
     pub host: Option<String>,
     pub durable_objects: worker::ObjectNamespace,
+    pub kv_store: worker::kv::KvStore,
 }
 
 impl CloudflareServerState {
@@ -30,12 +31,16 @@ impl CloudflareServerState {
         // Get Durable Object namespace
         let durable_objects = env.durable_object("SSHX_SESSIONS")?;
 
+        // Get KV store for session state
+        let kv_store = env.kv("SSHX_SESSIONS_KV")?;
+
         Ok(Self {
             db,
             secret,
             _override_origin,
             host,
             durable_objects,
+            kv_store,
         })
     }
 

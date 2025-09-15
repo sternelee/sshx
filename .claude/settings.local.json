@@ -7,7 +7,8 @@
       "mcp__mcp-hub__context7-get-library-docs",
       "Bash(cargo check:*)",
       "Bash(find:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

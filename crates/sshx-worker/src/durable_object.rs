@@ -58,7 +58,6 @@ pub struct SshxSession {
     _session_state: Option<SessionState>,
 }
 
-#[durable_object]
 impl DurableObject for SshxSession {
     fn new(state: State, env: Env) -> Self {
         Self {
@@ -68,7 +67,7 @@ impl DurableObject for SshxSession {
         }
     }
 
-    async fn fetch(&mut self, req: Request) -> Result<Response> {
+    async fn fetch(&self, req: Request) -> Result<Response> {
         // Handle WebSocket upgrade requests
         if req.headers().get("upgrade")?.as_deref() == Some("websocket") {
             return self.handle_websocket_upgrade(req).await;
@@ -85,7 +84,7 @@ impl DurableObject for SshxSession {
 
 impl SshxSession {
     /// Handle WebSocket upgrade requests
-    async fn handle_websocket_upgrade(&mut self, req: Request) -> Result<Response> {
+    async fn handle_websocket_upgrade(&self, req: Request) -> Result<Response> {
         let WebSocketPair { client, server } = WebSocketPair::new()?;
 
         // Accept the WebSocket connection
@@ -112,7 +111,7 @@ impl SshxSession {
     }
 
     /// Handle POST requests for session operations
-    async fn handle_post_request(&mut self, _req: Request) -> Result<Response> {
+    async fn handle_post_request(&self, _req: Request) -> Result<Response> {
         console_log!("Received POST request to Durable Object");
 
         // For now, just return a success response
@@ -120,7 +119,7 @@ impl SshxSession {
     }
 
     /// Handle GET requests for session information
-    async fn handle_get_request(&mut self, _req: Request) -> Result<Response> {
+    async fn handle_get_request(&self, _req: Request) -> Result<Response> {
         console_log!("Received GET request to Durable Object");
         Response::ok("GET request received")
     }
