@@ -46,6 +46,14 @@ impl P2pNode {
         self.endpoint.node_id()
     }
 
+    /// Returns the node address with endpoints
+    pub async fn node_addr(&self) -> Result<iroh::NodeAddr> {
+        let node_id = self.endpoint.node_id();
+        // For now just return node id without direct addresses
+        // This can be improved later with proper endpoint discovery
+        Ok(iroh::NodeAddr::new(node_id))
+    }
+
     /// Creates a new session with a random topic
     pub async fn create_session(&self, ticket: SessionTicket) -> Result<P2pSession> {
         P2pSession::new(self, ticket).await
@@ -86,12 +94,34 @@ impl Clone for P2pSession {
 impl P2pSession {
     async fn new(node: &P2pNode, ticket: SessionTicket) -> Result<Self> {
         let topic = ticket.topic;
-        let node_ids = ticket.nodes.iter().map(|p| p.node_id).collect::<Vec<_>>();
+        let node_ids = ticket
+            .nodes
+            .iter()
+            .map(|addr| addr.node_id)
+            .collect::<Vec<_>>();
 
         tracing::info!(
-            "Subscribing to topic with {} bootstrap nodes",
-            node_ids.len()
+            "Subscribing to topic {} with {} bootstrap nodes: {:?}",
+            topic,
+            node_ids.len(),
+            node_ids
         );
+
+        // If we have bootstrap nodes, establish connections to them first
+        for node_addr in &ticket.nodes {
+            if node_addr.node_id != node.node_id() {
+                tracing::info!(
+                    "Attempting to connect to bootstrap node: {}",
+                    node_addr.node_id
+                );
+                // Try to establish direct connection to bootstrap node
+                // Note: Direct connections will be established automatically by iroh's discovery
+                tracing::info!(
+                    "Bootstrap node {} will be discovered automatically",
+                    node_addr.node_id
+                );
+            }
+        }
 
         let topic_handle = node
             .gossip

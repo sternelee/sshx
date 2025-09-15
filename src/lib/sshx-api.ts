@@ -143,7 +143,7 @@ export class SshxAPI {
     try {
       const reader = state.receiver.getReader();
       console.log("🚀 Started event stream for session:", state.id);
-      
+
       while (state.connected) {
         const { done, value } = await reader.read();
         if (done) {
@@ -154,17 +154,29 @@ export class SshxAPI {
         console.log("📨 Raw stream value received:", {
           type: typeof value,
           constructor: value?.constructor?.name,
-          length: value instanceof Uint8Array ? value.length : 'N/A',
-          preview: value instanceof Uint8Array ? 
-            Array.from(value.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ') : 
-            String(value).slice(0, 100)
+          length: value instanceof Uint8Array ? value.length : "N/A",
+          preview:
+            value instanceof Uint8Array
+              ? Array.from(value.slice(0, 20))
+                  .map((b) => b.toString(16).padStart(2, "0"))
+                  .join(" ")
+              : String(value).slice(0, 100),
         });
+
+        // Skip empty events (connection/disconnection events)
+        if (value instanceof Uint8Array && value.length === 0) {
+          console.log("⏭️ Skipping empty event (connection/disconnection)");
+          continue;
+        }
 
         const event = this.convertToEvent(value);
         console.log("🔄 Converted event:", event);
-        
-        for (const subscriber of state.subscribers) {
-          subscriber(event);
+
+        // Only process events that have actual content
+        if (event && Object.keys(event).length > 0) {
+          for (const subscriber of state.subscribers) {
+            subscriber(event);
+          }
         }
       }
     } catch (error) {
@@ -178,14 +190,16 @@ export class SshxAPI {
     if (!state || !state.connected) {
       throw new Error(`Session ${sessionId} not found or disconnected`);
     }
-    
+
     console.log("📤 Sending data to CLI:", {
       sessionId,
       dataLength: data.length,
-      preview: Array.from(data.slice(0, 50)).map(b => b.toString(16).padStart(2, '0')).join(' '),
-      decoded: new TextDecoder().decode(data)
+      preview: Array.from(data.slice(0, 50))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(" "),
+      decoded: new TextDecoder().decode(data),
     });
-    
+
     await state.sender.send(data);
   }
 
@@ -245,7 +259,7 @@ export class SshxAPI {
         type: typeof jsValue,
         constructor: jsValue?.constructor?.name,
         isUint8Array: jsValue instanceof Uint8Array,
-        length: jsValue instanceof Uint8Array ? jsValue.length : 'N/A'
+        length: jsValue instanceof Uint8Array ? jsValue.length : "N/A",
       });
 
       // Handle raw binary data that might be encoded
@@ -254,7 +268,7 @@ export class SshxAPI {
           const decoder = new TextDecoder();
           const messageStr = decoder.decode(jsValue);
           console.log("📋 Decoded message string:", messageStr);
-          
+
           const parsedMessage = JSON.parse(messageStr);
           console.log("🔍 Parsed JSON message:", parsedMessage);
 
@@ -263,7 +277,12 @@ export class SshxAPI {
           console.log("✅ Final converted event:", event);
           return event;
         } catch (e) {
-          console.warn("⚠️ Failed to decode/parse binary data:", e, "Data:", jsValue);
+          console.warn(
+            "⚠️ Failed to decode/parse binary data:",
+            e,
+            "Data:",
+            jsValue,
+          );
           return { error: "Invalid binary message format" };
         }
       }
@@ -298,7 +317,7 @@ export class SshxAPI {
   private serverMessageToSshxEvent(serverMessage: any): SshxEvent {
     // Convert ServerMessage format to SshxEvent format
     console.log("🔄 Converting ServerMessage to SshxEvent:", serverMessage);
-    
+
     switch (serverMessage.type) {
       case "Data":
         const dataEvent = {
@@ -310,28 +329,28 @@ export class SshxAPI {
         };
         console.log("📊 Created Data event:", dataEvent);
         return dataEvent;
-        
+
       case "CreatedShell":
         const createdEvent = {
           shells: [[serverMessage.data.id, { x: 0, y: 0, rows: 24, cols: 80 }]],
         };
         console.log("🐚 Created CreatedShell event:", createdEvent);
         return createdEvent;
-        
+
       case "ClosedShell":
         const closedEvent = {
           shells: [], // Empty shells array triggers shell removal
         };
         console.log("❌ Created ClosedShell event:", closedEvent);
         return closedEvent;
-        
+
       case "Error":
         const errorEvent = {
           error: serverMessage.data.message,
         };
         console.log("🔥 Created Error event:", errorEvent);
         return errorEvent;
-        
+
       default:
         console.warn("⚠️ Unknown server message type:", serverMessage.type);
         return { error: "Unknown message type" };

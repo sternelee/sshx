@@ -99,14 +99,37 @@ impl Session {
                         match e {
                             iroh_gossip::api::Event::Received(msg) => {
                                 // Extract the actual message content from Received event
-                                tracing::info!("🟢 Received P2P message: {} bytes from peer", msg.content.len());
-                                tracing::info!("🔍 Message content preview: {:?}", 
-                                    String::from_utf8_lossy(&msg.content[..msg.content.len().min(200)]));
-                                tracing::info!("📋 Raw bytes: {:?}", &msg.content[..msg.content.len().min(50)]);
-                                
+                                tracing::info!(
+                                    "🟢 Received P2P message: {} bytes from peer {}",
+                                    msg.content.len(),
+                                    msg.delivered_from
+                                );
+                                tracing::info!(
+                                    "🔍 Message content preview: {:?}",
+                                    String::from_utf8_lossy(
+                                        &msg.content[..msg.content.len().min(200)]
+                                    )
+                                );
+                                tracing::info!(
+                                    "📋 Raw bytes: {:?}",
+                                    &msg.content[..msg.content.len().min(50)]
+                                );
+
                                 // Convert Bytes to Vec<u8> then to Uint8Array JsValue
                                 let bytes: &[u8] = &msg.content;
                                 let array = js_sys::Uint8Array::from(bytes);
+                                Ok(array.into())
+                            }
+                            iroh_gossip::api::Event::NeighborUp(node_id) => {
+                                tracing::info!("🟢 New peer connected: {}", node_id);
+                                // Return empty Uint8Array for connection events
+                                let array = js_sys::Uint8Array::new_with_length(0);
+                                Ok(array.into())
+                            }
+                            iroh_gossip::api::Event::NeighborDown(node_id) => {
+                                tracing::info!("🔴 Peer disconnected: {}", node_id);
+                                // Return empty Uint8Array for disconnection events
+                                let array = js_sys::Uint8Array::new_with_length(0);
                                 Ok(array.into())
                             }
                             _ => {

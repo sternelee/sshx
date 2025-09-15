@@ -49,8 +49,9 @@ impl Controller {
         };
         let encryption_key = rand_alphanumeric(14);
 
-        // Create session ticket
-        let ticket = SessionTicket::new(topic, vec![], encryption_key.clone());
+        // Create session ticket with CLI node as bootstrap
+        let cli_node_addr = p2p_node.node_addr().await?;
+        let ticket = SessionTicket::new(topic, vec![cli_node_addr], encryption_key.clone());
         let ticket_str = ticket.to_string();
 
         // Create P2P session
@@ -90,6 +91,8 @@ impl Controller {
         let mut event_stream = self.p2p_session.event_stream();
 
         debug!("P2P controller started, waiting for events...");
+        println!("🎯 P2P Controller initialized and listening for browser connections");
+        println!("📋 Session ticket: {}", self.ticket);
 
         loop {
             tokio::select! {
@@ -124,8 +127,9 @@ impl Controller {
                     println!("📨 CLI received P2P event: {:?}", event);
                     match event {
                         iroh_gossip::api::Event::Received(msg) => {
-                            println!("🟢 Received message from browser: {} bytes", msg.content.len());
-                            println!("🔍 Message content preview: {:?}", 
+                            println!("🟢 Received message from browser: {} bytes from peer {}",
+                                msg.content.len(), msg.delivered_from);
+                            println!("🔍 Message content preview: {:?}",
                                 String::from_utf8_lossy(&msg.content[..msg.content.len().min(200)]));
                             // Handle ClientMessage from browser clients
                             self.handle_p2p_message(&msg.content).await;
@@ -174,7 +178,11 @@ impl Controller {
                 self.spawn_shell_task(id, (0, 0));
             }
             ClientMessage::Input(data) => {
-                println!("⌨️ Browser sent input for shell {}: {} bytes", data.id, data.data.len());
+                println!(
+                    "⌨️ Browser sent input for shell {}: {} bytes",
+                    data.id,
+                    data.data.len()
+                );
                 // Process terminal input from browser and send to local shell
                 let input_data = TerminalInput {
                     id: data.id,
@@ -215,7 +223,7 @@ impl Controller {
         let output_tx = self.output_tx.clone();
         tokio::spawn(async move {
             println!("🎭 Shell task {} starting...", id);
-            
+
             // Notify that this shell was created
             let created_msg = ServerMessage::CreatedShell { id };
             println!("📢 Sending CreatedShell message: {:?}", created_msg);
