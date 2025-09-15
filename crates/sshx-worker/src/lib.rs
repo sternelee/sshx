@@ -53,7 +53,10 @@ struct AuthTokenRequest {
     auth_token: String,
 }
 
-async fn handle_register(mut req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_register(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let register_request: RegisterRequest = req.json().await?;
     let user_service = UserService::new(state);
 
@@ -69,7 +72,10 @@ async fn handle_register(mut req: Request, state: Arc<CloudflareServerState>) ->
     }
 }
 
-async fn handle_login(mut req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_login(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let login_request: LoginRequest = req.json().await?;
     let user_service = UserService::new(state);
 
@@ -85,7 +91,10 @@ async fn handle_login(mut req: Request, state: Arc<CloudflareServerState>) -> wo
     }
 }
 
-async fn handle_generate_api_key(mut req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_generate_api_key(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let generate_request: GenerateApiKeyRequest = req.json().await?;
     let user_service = UserService::new(state);
 
@@ -101,7 +110,10 @@ async fn handle_generate_api_key(mut req: Request, state: Arc<CloudflareServerSt
     }
 }
 
-async fn handle_list_api_keys(mut req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_list_api_keys(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let list_request: ListApiKeysRequest = req.json().await?;
     let user_service = UserService::new(state);
 
@@ -117,10 +129,13 @@ async fn handle_list_api_keys(mut req: Request, state: Arc<CloudflareServerState
     }
 }
 
-async fn handle_delete_api_key(req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_delete_api_key(
+    req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let url = req.url()?;
     let path_segments: Vec<&str> = url.path().split('/').collect();
-    
+
     // Expected path: /api/auth/api-keys/{id}
     let api_key_id = if path_segments.len() >= 5 {
         path_segments[4].to_string()
@@ -149,7 +164,10 @@ async fn handle_delete_api_key(req: Request, state: Arc<CloudflareServerState>) 
     }
 }
 
-async fn handle_list_user_sessions(mut req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_list_user_sessions(
+    mut req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let list_request: ListUserSessionsRequest = req.json().await?;
     let user_service = UserService::new(state);
 
@@ -165,10 +183,13 @@ async fn handle_list_user_sessions(mut req: Request, state: Arc<CloudflareServer
     }
 }
 
-async fn handle_close_user_session(req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_close_user_session(
+    req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let url = req.url()?;
     let path_segments: Vec<&str> = url.path().split('/').collect();
-    
+
     // Expected path: /api/auth/sessions/{id}/close
     let session_id = if path_segments.len() >= 5 {
         path_segments[4].to_string()
@@ -197,10 +218,13 @@ async fn handle_close_user_session(req: Request, state: Arc<CloudflareServerStat
     }
 }
 
-async fn handle_websocket(req: Request, _state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn handle_websocket(
+    req: Request,
+    _state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let url = req.url()?;
     let path_segments: Vec<&str> = url.path().split('/').collect();
-    
+
     // Expected path: /api/s/{name}
     let name = if path_segments.len() >= 4 {
         path_segments[3]
@@ -212,7 +236,10 @@ async fn handle_websocket(req: Request, _state: Arc<CloudflareServerState>) -> w
     Ok(Response::error("WebSocket not implemented yet", 501)?)
 }
 
-async fn route_request(req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
+async fn route_request(
+    req: Request,
+    state: Arc<CloudflareServerState>,
+) -> worker::Result<Response> {
     let url = req.url()?;
     let path = url.path();
     let method = req.method();
@@ -226,22 +253,18 @@ async fn route_request(req: Request, state: Arc<CloudflareServerState>) -> worke
         (Method::Delete, path) if path.starts_with("/api/auth/api-keys/") && path.len() > 19 => {
             handle_delete_api_key(req, state).await
         }
-        (Method::Post, path) if path.starts_with("/api/auth/sessions/") && path.ends_with("/close") => {
+        (Method::Post, path)
+            if path.starts_with("/api/auth/sessions/") && path.ends_with("/close") =>
+        {
             handle_close_user_session(req, state).await
         }
-        (_, path) if path.starts_with("/api/s/") => {
-            handle_websocket(req, state).await
-        }
+        (_, path) if path.starts_with("/api/s/") => handle_websocket(req, state).await,
         _ => Ok(Response::error("Not found", 404)?),
     }
 }
 
 #[event(fetch)]
-pub async fn main(
-    req: Request,
-    env: Env,
-    _ctx: Context,
-) -> worker::Result<Response> {
+pub async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
     // Initialize panic handler and logging
     console_error_panic_hook::set_once();
 
@@ -260,3 +283,4 @@ pub async fn main(
     // Route the request
     route_request(req, state).await
 }
+

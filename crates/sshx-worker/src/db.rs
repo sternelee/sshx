@@ -93,7 +93,8 @@ impl D1Store {
             VALUES (?1, ?2, ?3, ?4, ?5)
         ";
 
-        let _result = self.db
+        let _result = self
+            .db
             .prepare(query)
             .bind(&[
                 id.clone().into(),
@@ -124,7 +125,7 @@ impl D1Store {
             .bind(&[email.into()])?
             .first::<User>(None)
             .await?;
-            
+
         Ok(result)
     }
 
@@ -138,7 +139,7 @@ impl D1Store {
             .bind(&[id.into()])?
             .first::<User>(None)
             .await?;
-            
+
         Ok(result)
     }
 
@@ -160,7 +161,8 @@ impl D1Store {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ";
 
-        let _result = self.db
+        let _result = self
+            .db
             .prepare(query)
             .bind(&[
                 id.clone().into(),
@@ -198,7 +200,7 @@ impl D1Store {
             .bind(&[key_hash.into()])?
             .first::<ApiKey>(None)
             .await?;
-            
+
         Ok(result)
     }
 
@@ -321,7 +323,8 @@ impl D1Store {
     pub async fn update_session_activity(&self, session_id: &str) -> Result<()> {
         let query = "UPDATE sessions SET last_activity = ?1 WHERE id = ?2";
 
-        let _result = self.db
+        let _result = self
+            .db
             .prepare(query)
             .bind(&[Utc::now().to_rfc3339().into(), session_id.into()])?
             .run()
@@ -330,4 +333,3 @@ impl D1Store {
         Ok(())
     }
 }
-

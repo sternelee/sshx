@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "mcp__mcp-hub__context7-resolve-library-id",
+      "mcp__mcp-hub__context7-get-library-docs",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []
