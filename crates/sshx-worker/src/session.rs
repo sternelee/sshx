@@ -285,7 +285,7 @@ impl SessionState {
     }
 
     /// Update the last activity timestamp.
-    fn update_activity(&mut self) {
+    pub fn update_activity(&mut self) {
         self.last_activity = js_sys::Date::now() as u64;
     }
 }
@@ -438,6 +438,357 @@ impl SessionManager {
             Ok(None)
         }
     }
+
+    /// Handle terminal data from client
+    pub async fn handle_terminal_data(
+        &self,
+        session_name: &str,
+        shell_id: Sid,
+        data: Bytes,
+        seq: u64,
+    ) -> Result<()> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        session_state.add_data(shell_id, data.clone(), seq)?;
+        self.save_session_state(session_name, &session_state)
+            .await?;
+
+        console_log!(
+            "Terminal data processed for session {}, shell {}: {} bytes at seq {}",
+            session_name,
+            shell_id,
+            data.len(),
+            seq
+        );
+
+        Ok(())
+    }
+
+    /// Handle shell creation
+    pub async fn handle_shell_create(&self, session_name: &str, x: i32, y: i32) -> Result<Sid> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        let shell_id = session_state._counter.next_sid();
+        session_state.add_shell(shell_id, (x, y))?;
+        self.save_session_state(session_name, &session_state)
+            .await?;
+
+        console_log!(
+            "Shell created for session {}: ID {} at position ({}, {})",
+            session_name,
+            shell_id,
+            x,
+            y
+        );
+
+        Ok(shell_id)
+    }
+
+    /// Handle shell closure
+    pub async fn handle_shell_close(&self, session_name: &str, shell_id: Sid) -> Result<()> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        session_state.close_shell(shell_id)?;
+        self.save_session_state(session_name, &session_state)
+            .await?;
+
+        console_log!("Shell closed for session {}: ID {}", session_name, shell_id);
+
+        Ok(())
+    }
+
+    /// Handle shell movement/resizing
+    pub async fn handle_shell_move(
+        &self,
+        session_name: &str,
+        shell_id: Sid,
+        winsize: Option<WsWinsize>,
+    ) -> Result<()> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        session_state.move_shell(shell_id, winsize)?;
+        self.save_session_state(session_name, &session_state)
+            .await?;
+
+        console_log!("Shell moved for session {}: ID {}", session_name, shell_id);
+
+        Ok(())
+    }
+
+    /// Handle user joining a session
+    pub async fn handle_user_join(
+        &self,
+        session_name: &str,
+        user_id: Uid,
+        can_write: bool,
+    ) -> Result<()> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        session_state.add_user(user_id, can_write)?;
+        self.save_session_state(session_name, &session_state)
+            .await?;
+
+        console_log!(
+            "User {} joined session {} with write permission: {}",
+            user_id,
+            session_name,
+            can_write
+        );
+
+        Ok(())
+    }
+
+    /// Handle user leaving a session
+    pub async fn handle_user_leave(&self, session_name: &str, user_id: Uid) -> Result<()> {
+        let mut session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        let removed = session_state.remove_user(user_id);
+        if removed {
+            self.save_session_state(session_name, &session_state)
+                .await?;
+            console_log!("User {} left session {}", user_id, session_name);
+        }
+
+        Ok(())
+    }
+
+    /// Handle chat message
+    pub async fn handle_chat_message(
+        &self,
+        session_name: &str,
+        user_id: Uid,
+        message: String,
+    ) -> Result<String> {
+        let session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        let user_name = session_state
+            .users
+            .get(&user_id)
+            .map(|u| u.name.clone())
+            .unwrap_or_else(|| format!("User {}", user_id));
+
+        console_log!(
+            "Chat message from {} in session {}: {}",
+            user_name,
+            session_name,
+            message
+        );
+
+        Ok(user_name)
+    }
+
+    /// Get terminal data chunks for a shell
+    pub async fn get_shell_chunks(
+        &self,
+        session_name: &str,
+        shell_id: Sid,
+        chunknum: u64,
+    ) -> Result<Option<(u64, Vec<Bytes>)>> {
+        let session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        Ok(session_state.get_chunks(shell_id, chunknum))
+    }
+
+    /// Broadcast session update to all connected clients
+    pub async fn broadcast_session_update(&self, session_name: &str) -> Result<()> {
+        let session_state = match self.get_session_state(session_name).await? {
+            Some(state) => state,
+            None => return Err(anyhow!("Session not found: {}", session_name)),
+        };
+
+        // Get Durable Object for this session
+        let _durable_object = self.state.durable_object(session_name);
+
+        // In a real implementation, this would send messages to all connected WebSocket clients
+        // through the Durable Object's broadcast capability
+        console_log!(
+            "Broadcasting session update for {}: {} users, {} shells",
+            session_name,
+            session_state.users.len(),
+            session_state.shells.len()
+        );
+
+        Ok(())
+    }
+
+    /// Clean up inactive sessions
+    pub async fn cleanup_inactive_sessions(&self, max_age_hours: u64) -> Result<Vec<String>> {
+        let db = self.state.db();
+        let mut cleaned_sessions = Vec::new();
+
+        // Get all sessions
+        let sessions = db.get_all_sessions().await?;
+        let now = js_sys::Date::now() as u64;
+        let max_age_ms = max_age_hours * 60 * 60 * 1000;
+
+        for session in sessions {
+            if session.status == crate::db::SessionStatus::Active {
+                let session_state = self.get_session_state(&session.name).await?;
+
+                if let Some(state) = session_state {
+                    // Check if session is inactive
+                    if now - state.last_activity > max_age_ms {
+                        console_log!("Cleaning up inactive session: {}", session.name);
+                        self.close_session(&session.name).await?;
+                        cleaned_sessions.push(session.name);
+                    }
+                }
+            }
+        }
+
+        console_log!("Cleaned up {} inactive sessions", cleaned_sessions.len());
+        Ok(cleaned_sessions)
+    }
+
+    /// Get session statistics
+    pub async fn get_session_stats(&self) -> Result<SessionStats> {
+        let db = self.state.db();
+        let sessions = db.get_all_sessions().await?;
+
+        let mut active_sessions = 0;
+        let mut total_users = 0;
+        let mut total_shells = 0;
+        let mut recently_active = 0;
+
+        let now = js_sys::Date::now() as u64;
+        let recent_threshold = now - (5 * 60 * 1000); // 5 minutes ago
+
+        for session in sessions {
+            if session.status == crate::db::SessionStatus::Active {
+                active_sessions += 1;
+
+                if let Ok(session_state) = self.get_session_state(&session.name).await {
+                    if let Some(state) = session_state {
+                        total_users += state.users.len();
+                        total_shells += state.shells.len();
+
+                        if state.last_activity > recent_threshold {
+                            recently_active += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(SessionStats {
+            active_sessions,
+            total_users,
+            total_shells,
+            recently_active,
+        })
+    }
+
+    /// Create a session snapshot for persistence
+    pub async fn create_session_snapshot(&self, session_name: &str) -> Result<SessionSnapshot> {
+        // Get session state from KV
+        let session_state = self
+            .get_session_state(session_name)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_name))?;
+
+        // Serialize the session state
+        let snapshot_data = serde_json::to_vec(&session_state)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize session state: {}", e))?;
+
+        Ok(SessionSnapshot::new(
+            session_name.to_string(),
+            snapshot_data,
+        ))
+    }
+
+    /// Restore a session from a snapshot
+    pub async fn restore_session_from_snapshot(&self, snapshot: SessionSnapshot) -> Result<()> {
+        // Deserialize session state
+        let session_state: SessionState = serde_json::from_slice(&snapshot.snapshot_data)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize session snapshot: {}", e))?;
+
+        // Restore session state to KV
+        self.save_session_state(&snapshot.session_id, &session_state)
+            .await?;
+
+        // Update session activity in database
+        let db = self.state.db();
+        db.update_session_activity(&snapshot.session_id).await?;
+
+        console_log!("Session restored from snapshot: {}", snapshot.session_id);
+        Ok(())
+    }
+
+    /// List available session snapshots for a session
+    pub async fn list_session_snapshots(
+        &self,
+        _session_name: &str,
+    ) -> Result<Vec<SessionSnapshot>> {
+        // This would query D1 or KV for stored snapshots
+        // For now, return empty vector as placeholder
+        Ok(Vec::new())
+    }
+
+    /// Delete old session snapshots to save space
+    pub async fn cleanup_old_snapshots(
+        &self,
+        _session_name: &str,
+        _max_age_hours: u64,
+    ) -> Result<usize> {
+        // This would delete snapshots older than max_age_hours
+        // For now, return 0 as placeholder
+        Ok(0)
+    }
+}
+
+/// Session snapshot for persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub id: String,
+    pub session_id: String,
+    pub snapshot_data: Vec<u8>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub version: u32,
+}
+
+impl SessionSnapshot {
+    pub fn new(session_id: String, snapshot_data: Vec<u8>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+            snapshot_data,
+            created_at: chrono::Utc::now(),
+            version: 1,
+        }
+    }
+}
+
+/// Session statistics
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionStats {
+    pub active_sessions: usize,
+    pub total_users: usize,
+    pub total_shells: usize,
+    pub recently_active: usize,
 }
 
 /// Information about a session

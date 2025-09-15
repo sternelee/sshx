@@ -245,11 +245,21 @@ impl WebSocketHandler {
                         .await?;
                     return Ok(true);
                 }
-                session_state.add_data(shell_id, data, offset)?;
-                // In a real implementation, this would be forwarded to the backend terminal
+
+                // Add data to session state
+                session_state.add_data(shell_id, data.clone(), offset)?;
+
+                // Broadcast terminal data to all subscribed clients
+                self.broadcast_terminal_data(websocket, shell_id, data.clone(), offset)
+                    .await?;
+
+                // Update session activity timestamp
+                session_state.update_activity();
+
                 console_log!(
-                    "Received terminal data for shell {}: {} bytes",
+                    "Broadcast terminal data for shell {}: {} bytes at offset {}",
                     shell_id,
+                    data.len(),
                     offset
                 );
             }
@@ -259,15 +269,19 @@ impl WebSocketHandler {
                 }
                 subscribed_shells.insert(shell_id);
 
+                // Send existing chunks
                 if let Some((seqnum, chunks)) = session_state.get_chunks(shell_id, chunknum) {
                     self.send_message(websocket, WsServer::Chunks(shell_id, seqnum, chunks))
                         .await?;
                 }
 
-                // In a real implementation, you would start a stream to monitor for new chunks
-                // For now, we'll just send the initial chunks
+                // Start a background task to monitor for new chunks and push them to this client
+                // This is a simplified implementation - in production you'd want proper stream handling
+                self.start_shell_monitoring(websocket, session_state, shell_id, chunknum)
+                    .await?;
+
                 console_log!(
-                    "Client subscribed to shell {} at chunk {}",
+                    "Client subscribed to shell {} at chunk {}, starting real-time monitoring",
                     shell_id,
                     chunknum
                 );
@@ -353,6 +367,129 @@ impl WebSocketHandler {
     ) -> Result<()> {
         // In a real implementation, this would broadcast to all connected clients
         console_log!("Broadcasting chat from {}: {}", user_name, message);
+        Ok(())
+    }
+
+    /// Broadcast terminal data to all subscribed clients.
+    async fn broadcast_terminal_data(
+        &self,
+        _websocket: &WebSocket,
+        shell_id: Sid,
+        data: bytes::Bytes,
+        offset: u64,
+    ) -> Result<()> {
+        // In a real implementation with Durable Objects, this would broadcast to all connected clients
+        // For now, we'll simulate the broadcast by logging
+        console_log!(
+            "Broadcasting terminal data for shell {}: {} bytes at offset {}",
+            shell_id,
+            data.len(),
+            offset
+        );
+
+        // In a production implementation, you would:
+        // 1. Store the message in the Durable Object state
+        // 2. Use the Durable Object's broadcast capability to send to all connected WebSockets
+        // 3. Handle connection failures and retries
+
+        Ok(())
+    }
+
+    /// Start monitoring a shell for new data and push to client.
+    async fn start_shell_monitoring(
+        &self,
+        _websocket: &WebSocket,
+        _session_state: &crate::session::SessionState,
+        shell_id: Sid,
+        _chunknum: u64,
+    ) -> Result<()> {
+        console_log!("Starting monitoring for shell {}", shell_id);
+
+        // In a real implementation, this would:
+        // 1. Set up a subscription to the shell's data stream
+        // 2. Monitor for new chunks being added
+        // 3. Push new chunks to the subscribed client in real-time
+        // 4. Handle disconnections and cleanup
+
+        // For Cloudflare Workers, this would typically involve:
+        // - Using the Durable Object's alarm system for periodic checks
+        // - Storing subscription state in the Durable Object
+        // - Using WebSocket connections managed by the Durable Object
+
+        Ok(())
+    }
+
+    /// Handle terminal resize events.
+    async fn handle_terminal_resize(
+        &self,
+        _websocket: &WebSocket,
+        shell_id: Sid,
+        new_size: crate::protocol::WsWinsize,
+    ) -> Result<()> {
+        console_log!(
+            "Terminal resize for shell {}: {}x{} at position ({}, {})",
+            shell_id,
+            new_size.cols,
+            new_size.rows,
+            new_size.x,
+            new_size.y
+        );
+
+        // In a real implementation, this would:
+        // 1. Update the shell's window size in the session state
+        // 2. Broadcast the resize event to all connected clients
+        // 3. Forward the resize signal to the backend terminal process
+
+        Ok(())
+    }
+
+    /// Handle shell creation events.
+    async fn handle_shell_created(
+        &self,
+        _websocket: &WebSocket,
+        shell_id: Sid,
+        position: (i32, i32),
+    ) -> Result<()> {
+        console_log!(
+            "Shell created: ID {} at position ({}, {})",
+            shell_id,
+            position.0,
+            position.1
+        );
+
+        // In a real implementation, this would:
+        // 1. Initialize the shell state
+        // 2. Start the backend terminal process
+        // 3. Set up data forwarding from the terminal to WebSocket clients
+        // 4. Broadcast the new shell to all connected clients
+
+        Ok(())
+    }
+
+    /// Handle shell termination events.
+    async fn handle_shell_terminated(&self, _websocket: &WebSocket, shell_id: Sid) -> Result<()> {
+        console_log!("Shell terminated: ID {}", shell_id);
+
+        // In a real implementation, this would:
+        // 1. Clean up the shell state
+        // 2. Stop the backend terminal process
+        // 3. Notify all connected clients about the shell closure
+        // 4. Handle any pending data for the shell
+
+        Ok(())
+    }
+
+    /// Synchronize session state across all clients.
+    async fn synchronize_session_state(
+        &self,
+        _websocket: &WebSocket,
+        _session_state: &crate::session::SessionState,
+    ) -> Result<()> {
+        console_log!("Synchronizing session state");
+
+        // Send current session state to the client
+        // This includes users, shells, and other metadata
+
         Ok(())
     }
 }

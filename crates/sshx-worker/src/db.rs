@@ -349,4 +349,13 @@ impl D1Store {
 
         Ok(())
     }
+
+    pub async fn get_all_sessions(&self) -> Result<Vec<Session>> {
+        let query = "SELECT * FROM sessions ORDER BY created_at DESC";
+
+        let result = self.db.prepare(query).all().await?;
+
+        let sessions = result.results::<Session>()?;
+        Ok(sessions)
+    }
 }

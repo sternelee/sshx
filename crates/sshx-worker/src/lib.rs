@@ -6,6 +6,7 @@ use worker::*;
 mod db;
 mod durable_object;
 mod grpc;
+mod grpc_gateway;
 mod protocol;
 mod session;
 mod state;
@@ -15,6 +16,7 @@ mod websocket;
 use base64::prelude::*;
 use bytes::Bytes;
 use grpc::GrpcServer;
+use grpc_gateway::GrpcGateway;
 use session::{SessionManager, SessionMetadata};
 use state::CloudflareServerState;
 use user_service::{
@@ -433,250 +435,17 @@ async fn handle_create_session(
     }
 }
 
-async fn handle_grpc(
-    req: Request,
-    state: Arc<CloudflareServerState>,
-) -> worker::Result<Response> {
+async fn handle_grpc(req: Request, state: Arc<CloudflareServerState>) -> worker::Result<Response> {
     let user_service = Arc::new(UserService::new(Arc::clone(&state)));
-    let grpc_server = GrpcServer::new(Arc::clone(&state), user_service);
+    let grpc_server = Arc::new(GrpcServer::new(Arc::clone(&state), user_service));
+    let grpc_gateway = GrpcGateway::new(Arc::clone(&state), grpc_server);
 
-    let url = req.url()?;
-    let path = url.path();
-    let method = req.method();
-
-    // Route gRPC requests based on path
-    match (&method, path) {
-        (Method::Post, "/grpc/sshx.SshxService/Open") => {
-            handle_grpc_open(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/Close") => {
-            handle_grpc_close(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/Register") => {
-            handle_grpc_register(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/Login") => {
-            handle_grpc_login(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/GenerateApiKey") => {
-            handle_grpc_generate_api_key(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/DeleteApiKey") => {
-            handle_grpc_delete_api_key(req, grpc_server).await
-        }
-        (Method::Post, "/grpc/sshx.SshxService/ListApiKeys") => {
-            handle_grpc_list_api_keys(req, grpc_server).await
-        }
-        _ => Ok(error_response("Unknown gRPC endpoint", 404)),
-    }
-}
-
-async fn handle_grpc_open(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(open_request) => {
-            match grpc_server.handle_open(open_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC Open failed: {}", e);
-                    Ok(error_response(&format!("gRPC Open failed: {}", e), 500))
-                }
-            }
-        }
+    // Use the new gRPC gateway to handle all gRPC requests
+    match grpc_gateway.handle_request(req).await {
+        Ok(response) => Ok(response),
         Err(e) => {
-            error!("Failed to decode gRPC Open request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_close(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(close_request) => {
-            match grpc_server.handle_close(close_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC Close failed: {}", e);
-                    Ok(error_response(&format!("gRPC Close failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC Close request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_register(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(register_request) => {
-            match grpc_server.handle_register(register_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC Register failed: {}", e);
-                    Ok(error_response(&format!("gRPC Register failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC Register request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_login(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(login_request) => {
-            match grpc_server.handle_login(login_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC Login failed: {}", e);
-                    Ok(error_response(&format!("gRPC Login failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC Login request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_generate_api_key(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(api_key_request) => {
-            match grpc_server.handle_generate_api_key(api_key_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC GenerateApiKey failed: {}", e);
-                    Ok(error_response(&format!("gRPC GenerateApiKey failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC GenerateApiKey request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_delete_api_key(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(delete_request) => {
-            match grpc_server.handle_delete_api_key(delete_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC DeleteApiKey failed: {}", e);
-                    Ok(error_response(&format!("gRPC DeleteApiKey failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC DeleteApiKey request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
-        }
-    }
-}
-
-async fn handle_grpc_list_api_keys(
-    mut req: Request,
-    grpc_server: GrpcServer,
-) -> worker::Result<Response> {
-    let body = req.bytes().await?;
-    match grpc::decode_protobuf(&body) {
-        Ok(list_request) => {
-            match grpc_server.handle_list_api_keys(list_request).await {
-                Ok(response) => {
-                    let encoded = grpc::encode_protobuf(&response);
-                    let mut headers = Headers::new();
-                    headers.set("content-type", "application/grpc+proto")?;
-                    Ok(Response::from_bytes(encoded.into_bytes())
-                        .unwrap()
-                        .with_status(200)
-                        .with_headers(headers))
-                }
-                Err(e) => {
-                    error!("gRPC ListApiKeys failed: {}", e);
-                    Ok(error_response(&format!("gRPC ListApiKeys failed: {}", e), 500))
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to decode gRPC ListApiKeys request: {}", e);
-            Ok(error_response(&format!("Invalid gRPC request: {}", e), 400))
+            error!("gRPC gateway error: {}", e);
+            Ok(error_response(&format!("gRPC error: {}", e), 500))
         }
     }
 }

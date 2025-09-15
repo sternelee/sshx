@@ -8,19 +8,19 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
-use prost::Message;
 use sshx_core::proto::{
     ApiKeyResponse, AuthResponse, CloseRequest, CloseResponse, DeleteApiKeyRequest,
-    DeleteApiKeyResponse, GenerateApiKeyRequest, ListApiKeysRequest, ListApiKeysResponse, LoginRequest,
-    OpenRequest, OpenResponse, RegisterRequest,
+    DeleteApiKeyResponse, GenerateApiKeyRequest, ListApiKeysRequest, ListApiKeysResponse,
+    LoginRequest, OpenRequest, OpenResponse, RegisterRequest,
 };
 use tracing::{error, info};
 
 use crate::session::{SessionManager, SessionMetadata};
 use crate::state::CloudflareServerState;
 use crate::user_service::{
-    GenerateApiKeyRequest as UserGenerateApiKeyRequest, ListApiKeysRequest as UserListApiKeysRequest,
-    LoginRequest as UserLoginRequest, RegisterRequest as UserRegisterRequest, UserService,
+    GenerateApiKeyRequest as UserGenerateApiKeyRequest,
+    ListApiKeysRequest as UserListApiKeysRequest, LoginRequest as UserLoginRequest,
+    RegisterRequest as UserRegisterRequest, UserService,
 };
 
 /// Server that handles gRPC-over-HTTP requests from the sshx command-line client.
@@ -50,7 +50,11 @@ impl GrpcServer {
         let session_manager = SessionManager::new(Arc::clone(&self.state));
 
         // Check if session already exists
-        if session_manager.is_session_active(name).await.unwrap_or(false) {
+        if session_manager
+            .is_session_active(name)
+            .await
+            .unwrap_or(false)
+        {
             return Err(anyhow::anyhow!("Session already exists"));
         }
 
@@ -76,7 +80,9 @@ impl GrpcServer {
 
     /// Verify authentication token and return user ID if valid.
     async fn verify_auth_token(&self, token: &str) -> Result<Option<String>> {
-        self.user_service.verify_auth_token(token).await
+        self.user_service
+            .verify_auth_token(token)
+            .await
             .map(|user| Some(user.id))
             .map_err(|_| anyhow::anyhow!("Invalid auth token"))
     }
@@ -118,7 +124,10 @@ impl GrpcServer {
             None
         };
 
-        match self.create_session(&req.name, encrypted_zeros, write_password_hash, user_id).await {
+        match self
+            .create_session(&req.name, encrypted_zeros, write_password_hash, user_id)
+            .await
+        {
             Ok((url, token)) => {
                 info!("Session created successfully: {}", req.name);
                 Ok(OpenResponse {
@@ -212,7 +221,10 @@ impl GrpcServer {
     }
 
     /// Handle GenerateApiKey request
-    pub async fn handle_generate_api_key(&self, req: GenerateApiKeyRequest) -> Result<ApiKeyResponse> {
+    pub async fn handle_generate_api_key(
+        &self,
+        req: GenerateApiKeyRequest,
+    ) -> Result<ApiKeyResponse> {
         info!("Generate API key request for user");
 
         // Verify auth token
@@ -229,7 +241,7 @@ impl GrpcServer {
             auth_token: req.auth_token,
             name: req.name,
             permissions: None, // TODO: Add support for permissions in proto
-            expires_at: None, // TODO: Add support for expires_at in proto
+            expires_at: None,  // TODO: Add support for expires_at in proto
         };
 
         match self.user_service.generate_api_key(generate_request).await {
@@ -239,7 +251,10 @@ impl GrpcServer {
                     id: api_key_response.id,
                     name: api_key_response.name,
                     token: api_key_response.api_key,
-                    created_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(), // Use current time as fallback
+                    created_at: SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(), // Use current time as fallback
                     user_id: "".to_string(), // TODO: Get actual user_id
                 })
             }
@@ -251,7 +266,10 @@ impl GrpcServer {
     }
 
     /// Handle DeleteApiKey request
-    pub async fn handle_delete_api_key(&self, req: DeleteApiKeyRequest) -> Result<DeleteApiKeyResponse> {
+    pub async fn handle_delete_api_key(
+        &self,
+        req: DeleteApiKeyRequest,
+    ) -> Result<DeleteApiKeyResponse> {
         info!("Delete API key request: {}", req.api_key_id);
 
         // Verify auth token
@@ -283,7 +301,10 @@ impl GrpcServer {
     }
 
     /// Handle ListApiKeys request
-    pub async fn handle_list_api_keys(&self, req: ListApiKeysRequest) -> Result<ListApiKeysResponse> {
+    pub async fn handle_list_api_keys(
+        &self,
+        req: ListApiKeysRequest,
+    ) -> Result<ListApiKeysResponse> {
         info!("List API keys request for user");
 
         // Verify auth token
@@ -303,15 +324,27 @@ impl GrpcServer {
         match self.user_service.list_api_keys(list_request).await {
             Ok(response) => {
                 info!("API keys listed successfully for user");
-                let api_keys = response.api_keys.into_iter().map(|key| {
-                    sshx_core::proto::ApiKeyInfo {
-                        id: key.id,
-                        name: key.name,
-                        created_at: SystemTime::from(key.created_at).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
-                        last_used: key.last_used_at.map(|dt| SystemTime::from(dt).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()),
-                        is_active: true, // TODO: Determine if key is active
-                    }
-                }).collect();
+                let api_keys = response
+                    .api_keys
+                    .into_iter()
+                    .map(|key| {
+                        sshx_core::proto::ApiKeyInfo {
+                            id: key.id,
+                            name: key.name,
+                            created_at: SystemTime::from(key.created_at)
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                            last_used: key.last_used_at.map(|dt| {
+                                SystemTime::from(dt)
+                                    .duration_since(SystemTime::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs()
+                            }),
+                            is_active: true, // TODO: Determine if key is active
+                        }
+                    })
+                    .collect();
 
                 Ok(ListApiKeysResponse { api_keys })
             }
@@ -321,17 +354,4 @@ impl GrpcServer {
             }
         }
     }
-}
-
-/// Helper function to encode protobuf message as base64
-pub fn encode_protobuf<T: Message>(msg: &T) -> String {
-    let mut buf = Vec::new();
-    msg.encode(&mut buf).unwrap();
-    BASE64_STANDARD.encode(&buf)
-}
-
-/// Helper function to decode base64 as protobuf message
-pub fn decode_protobuf<T: Message + Default>(data: &[u8]) -> Result<T> {
-    let bytes = BASE64_STANDARD.decode(data)?;
-    Ok(T::decode(&*bytes)?)
 }
