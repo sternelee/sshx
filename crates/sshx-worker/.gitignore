@@ -1,0 +1,41 @@
+# Build output
+/build/
+/dist/
+
+# Dependencies
+/node_modules/
+
+# Wrangler
+.wrangler/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Temporary files
+*.tmp
+*.temp

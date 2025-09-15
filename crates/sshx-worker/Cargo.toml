@@ -1,0 +1,56 @@
+[package]
+name = "sshx-worker"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "sshx server adapted for Cloudflare Workers"
+repository.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow.workspace = true
+async-channel = "1.9.0"
+async-stream = "0.3.5"
+base64 = "0.21.4"
+bytes = { version = "1.5.0", features = ["serde"] }
+ciborium = "0.2.1"
+dashmap = "5.5.3"
+futures-util = { version = "0.3.28", features = ["sink"] }
+hmac = "0.12.1"
+http = "1.2.0"
+parking_lot = "0.12.1"
+rand.workspace = true
+regex = "1.10.2"
+serde.workspace = true
+sha2 = "0.10.7"
+sshx-core.workspace = true
+subtle = "2.5.0"
+tokio = { workspace = true, features = ["rt", "macros"] }
+tokio-stream.workspace = true
+tokio-tungstenite = "0.26.1"
+tracing.workspace = true
+zstd = "0.12.4"
+bcrypt = "0.15.0"
+jsonwebtoken = "9.2.0"
+uuid = { version = "1.6.1", features = ["v4", "serde"] }
+chrono = { version = "0.4.31", features = ["serde"] }
+serde_json = "1.0.108"
+
+# Cloudflare Workers specific dependencies
+worker = { version = "0.4", features = ["http", "d1"] }
+console_error_panic_hook = "0.1"
+
+# Core sshx-server dependency - removed to avoid conflicts
+# sshx-server = { path = "../sshx-server" }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"

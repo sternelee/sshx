@@ -1,0 +1,59 @@
+name = "sshx-worker"
+compatibility_date = "2023-12-01"
+main = "build/worker/shim.mjs"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[build.upload]
+format = "modules"
+dir = "build/worker"
+
+[[build.upload.rules]]
+globs = ["**/*.wasm"]
+type = "CompiledWasm"
+
+[vars]
+# Environment variables for the worker
+# SSHX_SECRET = "your-secret-key"
+# SSHX_OVERRIDE_ORIGIN = "https://your-domain.com"
+# SSHX_HOST = "worker-1"
+
+# D1 database configuration
+[[d1_databases]]
+binding = "SSHX_DB"
+database_name = "sshx"
+database_id = "your-database-id"
+
+# For development
+[env.development]
+vars = { RUST_LOG = "debug" }
+
+# For staging
+[env.staging]
+vars = { RUST_LOG = "info" }
+
+# For production
+[env.production]
+vars = { RUST_LOG = "warn" }
+
+# Optional: KV namespaces (for caching and sessions)
+[[kv_namespaces]]
+binding = "SESSIONS_CACHE"
+id = "your-sessions-kv-namespace-id"
+preview_id = "your-preview-sessions-kv-namespace-id"
+
+# Optional: Durable Objects (if needed for real-time features)
+# [durable_objects]
+# bindings = [
+#   { name = "SSHX_SESSION", class_name = "SshxSession" }
+# ]
+#
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["SshxSession"]
+
+# Optional: R2 buckets (if needed for file storage)
+# [[r2_buckets]]
+# binding = "FILES"
+# bucket_name = "sshx-files"

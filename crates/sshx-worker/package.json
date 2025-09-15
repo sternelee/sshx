@@ -1,0 +1,27 @@
+{
+  "name": "sshx-worker",
+  "version": "1.0.0",
+  "description": "sshx server for Cloudflare Workers with D1 database",
+  "main": "build/worker/shim.mjs",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "worker-build --release",
+    "preview": "wrangler preview",
+    "tail": "wrangler tail",
+    "db:init": "wrangler d1 execute sshx --file=schema.sql",
+    "db:migrate": "wrangler d1 execute sshx --file=migrations.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "keywords": [
+    "sshx",
+    "cloudflare",
+    "workers",
+    "rust",
+    "d1"
+  ],
+  "author": "sshx contributors",
+  "license": "MIT"
+}
