@@ -2261,6 +2261,8 @@ dependencies = [
  "js-sys",
  "jsonwebtoken",
  "parking_lot",
+ "prost",
+ "prost-types",
  "rand",
  "regex",
  "serde",
@@ -2270,7 +2272,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tokio-stream",
- "tokio-tungstenite",
  "tracing",
  "uuid",
  "wasm-bindgen-futures",
@@ -3292,7 +3293,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52e04233d0395832db635283594103c453dab95ec6e33d6897135ff7881479de"
 dependencies = [
  "async-trait",
- "axum 0.8.1",
  "bytes",
  "chrono",
  "futures-channel",
