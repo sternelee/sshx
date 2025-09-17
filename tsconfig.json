@@ -10,6 +10,8 @@
     "sourceMap": true,
     "strict": true,
     "moduleResolution": "bundler",
+    "target": "ES2022",
+    "downlevelIteration": true,
     "types": ["./src/worker-configuration.d.ts"]
   }
   // Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
