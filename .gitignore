@@ -4,3 +4,4 @@ target
 .svelte-kit
 .claude
 .cargo
+.DS_Store
