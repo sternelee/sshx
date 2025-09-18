@@ -42,6 +42,7 @@ export class SessionSender {
   private constructor();
   free(): void;
   send(data: Uint8Array): Promise<void>;
+  send_json(json_str: string): Promise<void>;
 }
 /**
  * Node for SSH sessions over P2P networking

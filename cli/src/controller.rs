@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use shared::{
     crypto::rand_alphanumeric,
     events::{ClientMessage, ServerMessage, TerminalInput},
+    message::Message,
     p2p::{P2pNode, P2pSession},
     ticket::SessionTicket,
     Sid,
@@ -88,7 +89,7 @@ impl Controller {
     }
 
     async fn try_run(&mut self) -> Result<(), anyhow::Error> {
-        let mut event_stream = self.p2p_session.event_stream();
+        let mut event_stream = self.p2p_session.signed_message_stream();
 
         debug!("P2P controller started, waiting for events...");
         println!("🎯 P2P Controller initialized and listening for browser connections");
@@ -99,71 +100,41 @@ impl Controller {
                 // 1. Handle outgoing messages from local shells to send to browser
                 Some(msg) = self.output_rx.recv() => {
                     println!("📤 CLI sending ServerMessage to browser: {:?}", msg);
-                    // Send ServerMessage back to browser clients
-                    match serde_json::to_vec(&msg) {
-                        Ok(msg_bytes) => {
-                            println!("🔄 Serialized message: {} bytes", msg_bytes.len());
-                            println!("📋 Message content: {}", String::from_utf8_lossy(&msg_bytes));
-                            if let Err(e) = self.p2p_session.broadcast(msg_bytes).await {
-                                warn!("❌ Failed to send message to browser: {}", e);
-                            } else {
-                                println!("✅ Successfully broadcasted message to P2P network");
-                            }
-                        }
-                        Err(e) => {
-                            warn!("❌ Failed to serialize ServerMessage: {}", e);
-                        }
+                    // Send ServerMessage as a signed message back to browser clients
+                    let signed_msg = Message::ServerMessage(msg);
+                    if let Err(e) = self.p2p_session.broadcast_signed(signed_msg).await {
+                        warn!("❌ Failed to send signed message to browser: {}", e);
+                    } else {
+                        println!("✅ Successfully broadcasted signed message to P2P network");
                     }
                 }
-                // 2. Handle incoming messages from browser clients
-                Some(Ok(event)) = async {
-                    debug!("Waiting for P2P event...");
+                // 2. Handle incoming signed messages from browser clients
+                Some(Ok(received_msg)) = async {
+                    debug!("Waiting for P2P signed message...");
                     if let Some(ref mut stream) = event_stream {
                         stream.next().await
                     } else {
                         std::future::pending().await
                     }
                 } => {
-                    println!("📨 CLI received P2P event: {:?}", event);
-                    match event {
-                        iroh_gossip::api::Event::Received(msg) => {
-                            println!("🟢 Received message from browser: {} bytes from peer {}",
-                                msg.content.len(), msg.delivered_from);
-                            println!("🔍 Message content preview: {:?}",
-                                String::from_utf8_lossy(&msg.content[..msg.content.len().min(200)]));
-                            // Handle ClientMessage from browser clients
-                            self.handle_p2p_message(&msg.content).await;
+                    println!("📨 CLI received signed P2P message: {:?}", received_msg);
+                    match received_msg.message {
+                        Message::ClientMessage(client_msg) => {
+                            self.handle_client_message_from_browser(client_msg).await;
                         }
-                        iroh_gossip::api::Event::NeighborUp(node_id) => {
-                            println!("🟢 Browser client connected: {}", node_id);
+                        Message::SessionEvent(session_event) => {
+                            println!("🔔 Received session event: {:?}", session_event);
+                            // Handle session events
                         }
-                        iroh_gossip::api::Event::NeighborDown(node_id) => {
-                            println!("🔴 Browser client disconnected: {}", node_id);
+                        Message::Presence { user_id, name } => {
+                            println!("👤 User presence: {} {:?}", user_id, name);
+                            // Handle user presence updates
                         }
                         _ => {
-                            println!("🟡 Received other P2P event: {:?}", event);
+                            println!("🟡 Received other message type: {:?}", received_msg.message);
                         }
                     }
                 }
-            }
-        }
-    }
-
-    /// Handle incoming P2P messages from browser clients
-    async fn handle_p2p_message(&mut self, data: &[u8]) {
-        println!("🔧 Parsing ClientMessage from {} bytes", data.len());
-        match serde_json::from_slice::<ClientMessage>(data) {
-            Ok(client_msg) => {
-                println!("✅ Successfully parsed ClientMessage: {:?}", client_msg);
-                self.handle_client_message_from_browser(client_msg).await;
-            }
-            Err(e) => {
-                warn!(
-                    "❌ Failed to deserialize P2P message: {} ({} bytes)",
-                    e,
-                    data.len()
-                );
-                println!("📋 Raw data: {:?}", String::from_utf8_lossy(data));
             }
         }
     }

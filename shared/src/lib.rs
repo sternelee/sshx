@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod crypto;
 pub mod events;
+pub mod message;
 pub mod p2p;
 pub mod session;
 pub mod ticket;
@@ -19,6 +20,7 @@ pub use crypto::{rand_alphanumeric, Encryptor};
 pub use events::{
     ClientMessage, ServerMessage, SessionEvent, TerminalData, TerminalInput, TerminalSize,
 };
+pub use message::{Message, ReceivedMessage, SignedMessage};
 pub use p2p::{P2pNode, P2pSession};
 pub use session::{CloseRequest, CloseResponse, OpenRequest, OpenResponse};
 pub use ticket::SessionTicket;

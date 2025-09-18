@@ -16,6 +16,7 @@ export const session_id: (a: number, b: number) => void;
 export const session_encryption_key: (a: number, b: number) => void;
 export const __wbg_sessionsender_free: (a: number, b: number) => void;
 export const sessionsender_send: (a: number, b: number, c: number) => number;
+export const sessionsender_send_json: (a: number, b: number, c: number) => number;
 export const __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
 export const intounderlyingbytesource_type: (a: number) => number;
 export const intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;

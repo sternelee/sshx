@@ -4,6 +4,7 @@ use anyhow::Result;
 use futures_lite::StreamExt;
 use rand::RngCore;
 use shared::{
+    message::{Message, SignedMessage},
     p2p::{P2pNode, P2pSession},
     ticket::SessionTicket,
 };
@@ -98,27 +99,72 @@ impl Session {
                         tracing::debug!("Received P2P event: {:?}", e);
                         match e {
                             iroh_gossip::api::Event::Received(msg) => {
-                                // Extract the actual message content from Received event
-                                tracing::info!(
-                                    "🟢 Received P2P message: {} bytes from peer {}",
-                                    msg.content.len(),
-                                    msg.delivered_from
-                                );
-                                tracing::info!(
-                                    "🔍 Message content preview: {:?}",
-                                    String::from_utf8_lossy(
-                                        &msg.content[..msg.content.len().min(200)]
-                                    )
-                                );
-                                tracing::info!(
-                                    "📋 Raw bytes: {:?}",
-                                    &msg.content[..msg.content.len().min(50)]
-                                );
+                                // Try to parse and verify the signed message
+                                match SignedMessage::verify_and_decode(&msg.content) {
+                                    Ok(received_msg) => {
+                                        tracing::info!(
+                                            "🟢 Received signed P2P message: {:?} from peer {}",
+                                            received_msg.message,
+                                            received_msg.from
+                                        );
 
-                                // Convert Bytes to Vec<u8> then to Uint8Array JsValue
-                                let bytes: &[u8] = &msg.content;
-                                let array = js_sys::Uint8Array::from(bytes);
-                                Ok(array.into())
+                                        // Convert the message to JSON for JavaScript
+                                        match &received_msg.message {
+                                            Message::ServerMessage(server_msg) => {
+                                                // Convert ServerMessage to JSON string then to Uint8Array
+                                                match serde_json::to_string(server_msg) {
+                                                    Ok(json_str) => {
+                                                        let bytes = json_str.as_bytes();
+                                                        let array = js_sys::Uint8Array::from(bytes);
+                                                        Ok(array.into())
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Failed to serialize ServerMessage: {}",
+                                                            e
+                                                        );
+                                                        let array =
+                                                            js_sys::Uint8Array::new_with_length(0);
+                                                        Ok(array.into())
+                                                    }
+                                                }
+                                            }
+                                            Message::SessionEvent(session_event) => {
+                                                // Convert SessionEvent to JSON string then to Uint8Array
+                                                match serde_json::to_string(session_event) {
+                                                    Ok(json_str) => {
+                                                        let bytes = json_str.as_bytes();
+                                                        let array = js_sys::Uint8Array::from(bytes);
+                                                        Ok(array.into())
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Failed to serialize SessionEvent: {}",
+                                                            e
+                                                        );
+                                                        let array =
+                                                            js_sys::Uint8Array::new_with_length(0);
+                                                        Ok(array.into())
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                // For other message types, return empty Uint8Array
+                                                tracing::info!(
+                                                    "🟡 Received non-ServerMessage: {:?}",
+                                                    received_msg.message
+                                                );
+                                                let array = js_sys::Uint8Array::new_with_length(0);
+                                                Ok(array.into())
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to verify signed message: {}", e);
+                                        let array = js_sys::Uint8Array::new_with_length(0);
+                                        Ok(array.into())
+                                    }
+                                }
                             }
                             iroh_gossip::api::Event::NeighborUp(node_id) => {
                                 tracing::info!("🟢 New peer connected: {}", node_id);
@@ -193,15 +239,15 @@ impl SessionSender {
         self.0.broadcast(data.into()).await.map_err(to_js_err)?;
         Ok(())
     }
+
+    pub async fn send_json(&self, json_str: &str) -> Result<(), JsError> {
+        let data = json_str.as_bytes().to_vec();
+        self.0.broadcast(data.into()).await.map_err(to_js_err)?;
+        Ok(())
+    }
 }
 
 fn to_js_err(err: impl Into<anyhow::Error>) -> JsError {
     let err: anyhow::Error = err.into();
     JsError::new(&err.to_string())
-}
-
-fn js_sys_to_js_err(result: Result<bool, JsValue>) -> Result<(), JsError> {
-    result
-        .map_err(|e| JsError::new(&e.as_string().unwrap_or_else(|| "Unknown error".to_string())))?;
-    Ok(())
 }

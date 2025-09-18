@@ -197,9 +197,24 @@ export class SshxAPI {
       preview: Array.from(data.slice(0, 50))
         .map((b) => b.toString(16).padStart(2, "0"))
         .join(" "),
-      decoded: new TextDecoder().decode(data),
+      // decoded: new TextDecoder().decode(data),
     });
 
+    await state.sender.send(data);
+  }
+
+  async sendClientMessage(sessionId: string, message: any): Promise<void> {
+    const state = this.sessions.get(sessionId);
+    if (!state || !state.connected) {
+      throw new Error(`Session ${sessionId} not found or disconnected`);
+    }
+
+    console.log("📤 Sending ClientMessage to CLI:", message);
+
+    // Convert the message to JSON and send as binary data
+    const jsonStr = JSON.stringify(message);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(jsonStr);
     await state.sender.send(data);
   }
 
@@ -320,33 +335,38 @@ export class SshxAPI {
 
     switch (serverMessage.type) {
       case "Data":
-        const dataEvent = {
+        const dataEvent: SshxEvent = {
           chunks: [
-            serverMessage.data.id,
-            serverMessage.data.seq,
-            [new Uint8Array(serverMessage.data.data)],
+            serverMessage.data.id as number,
+            serverMessage.data.seq as number,
+            [new Uint8Array(serverMessage.data.data as ArrayBuffer)],
           ],
         };
         console.log("📊 Created Data event:", dataEvent);
         return dataEvent;
 
       case "CreatedShell":
-        const createdEvent = {
-          shells: [[serverMessage.data.id, { x: 0, y: 0, rows: 24, cols: 80 }]],
+        const createdEvent: SshxEvent = {
+          shells: [
+            [
+              serverMessage.data.id as number,
+              { x: 0, y: 0, rows: 24, cols: 80 },
+            ],
+          ],
         };
         console.log("🐚 Created CreatedShell event:", createdEvent);
         return createdEvent;
 
       case "ClosedShell":
-        const closedEvent = {
+        const closedEvent: SshxEvent = {
           shells: [], // Empty shells array triggers shell removal
         };
         console.log("❌ Created ClosedShell event:", closedEvent);
         return closedEvent;
 
       case "Error":
-        const errorEvent = {
-          error: serverMessage.data.message,
+        const errorEvent: SshxEvent = {
+          error: serverMessage.data.message as string,
         };
         console.log("🔥 Created Error event:", errorEvent);
         return errorEvent;

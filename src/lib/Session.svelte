@@ -283,9 +283,7 @@
       return;
     }
 
-    const encoder = new TextEncoder();
-    const data = encoder.encode(JSON.stringify(clientMessage));
-    await sshxApi.sendData(currentSessionId, data);
+    await sshxApi.sendClientMessage(currentSessionId, clientMessage);
   }
 
   onDestroy(() => {
@@ -361,9 +359,7 @@
           offset: Number(offset),
         },
       };
-      const encoder = new TextEncoder();
-      const dataToSend = encoder.encode(JSON.stringify(message));
-      await sshxApi.sendData(currentSessionId, dataToSend);
+      await sshxApi.sendClientMessage(currentSessionId, message);
     }
   }
 
