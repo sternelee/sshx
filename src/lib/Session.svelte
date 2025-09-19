@@ -391,7 +391,6 @@
       {hasWriteAccess}
       on:create={handleCreate}
       on:chat={() => {
-        console.log("Chat");
         showChat = !showChat;
         newMessages = false;
       }}
