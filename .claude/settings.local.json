@@ -7,7 +7,9 @@
       "Bash(npm run dev:*)",
       "Bash(tree:*)",
       "Bash(fd:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo build:*)"
     ],
     "deny": [],
     "ask": []

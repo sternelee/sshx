@@ -45,8 +45,8 @@ importers:
         specifier: ^1.0.5
         version: 1.0.5
       sshx-web:
-        specifier: link:browser/pkg
-        version: link:browser/pkg
+        specifier: file:./browser/pkg
+        version: browser@file:browser/pkg
       sshx-xterm:
         specifier: 5.2.1
         version: 5.2.1
@@ -674,6 +674,9 @@ packages:
   braces@3.0.3:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
     engines: {node: '>=8'}
+
+  browser@file:browser/pkg:
+    resolution: {directory: browser/pkg, type: directory}
 
   browserslist@4.25.4:
     resolution: {integrity: sha512-4jYpcjabC606xJ3kw2QwGEZKX0Aw7sgQdZCvIK9dhVSPh76BKo+C+btT1RRofH7B+8iNpEbgGNVWiLki5q93yg==}
@@ -2349,6 +2352,8 @@ snapshots:
   braces@3.0.3:
     dependencies:
       fill-range: 7.1.1
+
+  browser@file:browser/pkg: {}
 
   browserslist@4.25.4:
     dependencies:

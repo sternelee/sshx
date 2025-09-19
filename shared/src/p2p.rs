@@ -1,54 +1,63 @@
 //! P2P networking module using iroh for distributed communication.
 
 use anyhow::{Context, Result};
+use iroh::protocol::Router;
 use iroh::{Endpoint, SecretKey};
 use iroh_gossip::{
     api::{Event as GossipEvent, GossipReceiver, GossipSender},
     net::{Gossip, GOSSIP_ALPN},
     proto::TopicId,
 };
-use n0_future::{boxed::BoxStream, StreamExt};
+use n0_future::{boxed::BoxStream, stream::try_unfold, StreamExt};
+use tracing::{info, warn};
 
 use crate::{message::SignedMessage, ticket::SessionTicket};
 
-/// P2P node for iroh networking
+/// P2P node for iroh networking using Router pattern from reference
 #[derive(Debug)]
 pub struct P2pNode {
     secret_key: SecretKey,
-    endpoint: Endpoint,
+    router: Router,
     gossip: Gossip,
 }
 
 impl P2pNode {
-    /// Creates a new P2P node
+    /// Creates a new P2P node using Router architecture like reference implementation
     pub async fn new() -> Result<Self> {
         let secret_key = SecretKey::generate(rand::rngs::OsRng);
         let endpoint = Endpoint::builder()
             .secret_key(secret_key.clone())
-            .discovery_n0()
             .alpns(vec![GOSSIP_ALPN.to_vec()])
             .bind()
             .await?;
 
-        tracing::info!("P2P node created with ID: {}", endpoint.node_id());
+        let node_id = endpoint.node_id();
+        info!("endpoint bound");
+        info!("node id: {node_id:#?}");
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
+        info!("gossip spawned");
+
+        let router = Router::builder(endpoint)
+            .accept(GOSSIP_ALPN, gossip.clone())
+            .spawn();
+        info!("router spawned");
 
         Ok(Self {
             secret_key,
-            endpoint,
+            router,
             gossip,
         })
     }
 
     /// Returns the node ID
     pub fn node_id(&self) -> iroh::NodeId {
-        self.endpoint.node_id()
+        self.router.endpoint().node_id()
     }
 
     /// Returns the node address with endpoints
     pub async fn node_addr(&self) -> Result<iroh::NodeAddr> {
-        let node_id = self.endpoint.node_id();
+        let node_id = self.router.endpoint().node_id();
         // For now just return node id without direct addresses
         // This can be improved later with proper endpoint discovery
         Ok(iroh::NodeAddr::new(node_id))
@@ -64,9 +73,12 @@ impl P2pNode {
         P2pSession::new(self, ticket).await
     }
 
-    /// Shutdown the node gracefully
+    /// Shutdown the node gracefully like in reference implementation
     pub async fn shutdown(self) -> Result<()> {
-        self.endpoint.close().await;
+        if let Err(err) = self.router.shutdown().await {
+            warn!("failed to shutdown router cleanly: {err}");
+        }
+        self.router.endpoint().close().await;
         Ok(())
     }
 }
@@ -188,31 +200,39 @@ impl P2pSession {
         })
     }
 
-    /// Creates a stream of signed messages
+    /// Creates a stream of signed messages using try_unfold pattern like reference implementation
     pub fn signed_message_stream(&mut self) -> Option<BoxStream<Result<crate::ReceivedMessage>>> {
         self.receiver.take().map(|receiver| {
-            let stream = receiver
-                .map(|event| {
+            // Use the try_unfold pattern from browser-chat.txt reference
+            let stream = try_unfold(receiver, |mut receiver| async move {
+                loop {
+                    // Fetch the next event
+                    let Some(event) = receiver.try_next().await? else {
+                        return Ok(None);
+                    };
+
+                    // Convert into our event type. This fails if we receive a message
+                    // that cannot be decoded into our event type. If that is the case,
+                    // we just keep and log the error.
                     match event {
-                        Ok(GossipEvent::Received(msg)) => {
-                            // Try to parse and verify the signed message
-                            SignedMessage::verify_and_decode(&msg.content).map_err(|e| {
-                                anyhow::anyhow!("Failed to parse and verify signed message: {}", e)
-                            })
+                        GossipEvent::Received(msg) => {
+                            match SignedMessage::verify_and_decode(&msg.content) {
+                                Ok(received_msg) => {
+                                    break Ok(Some((received_msg, receiver)));
+                                }
+                                Err(err) => {
+                                    warn!("received invalid message: {err}");
+                                    continue;
+                                }
+                            }
                         }
-                        Ok(_) => {
-                            // Skip other gossip events for now
-                            Err(anyhow::anyhow!("Non-message gossip event"))
+                        _ => {
+                            // Skip other gossip events (NeighborUp, NeighborDown, etc.)
+                            continue;
                         }
-                        Err(e) => Err(anyhow::anyhow!("Gossip event error: {}", e)),
                     }
-                })
-                .filter_map(|result| {
-                    match result {
-                        Ok(msg) => Some(Ok(msg)),
-                        Err(_) => None, // Filter out errors for now
-                    }
-                });
+                }
+            });
             Box::pin(stream) as BoxStream<Result<crate::ReceivedMessage>>
         })
     }

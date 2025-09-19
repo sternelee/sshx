@@ -4,6 +4,7 @@ use anyhow::Result;
 use futures_lite::StreamExt;
 use rand::RngCore;
 use shared::{
+    events::ClientMessage,
     message::{Message, SignedMessage},
     p2p::{P2pNode, P2pSession},
     ticket::SessionTicket,
@@ -206,7 +207,9 @@ impl Session {
 impl Session {
     #[wasm_bindgen(getter)]
     pub fn sender(&self) -> SessionSender {
-        SessionSender(self.inner.sender().clone())
+        SessionSender {
+            inner: self.inner.clone(),
+        }
     }
 
     #[wasm_bindgen(getter)]
@@ -231,18 +234,46 @@ impl Session {
 
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
-pub struct SessionSender(iroh_gossip::api::GossipSender);
+pub struct SessionSender {
+    inner: P2pSession,
+}
 
 #[wasm_bindgen]
 impl SessionSender {
     pub async fn send(&self, data: Vec<u8>) -> Result<(), JsError> {
-        self.0.broadcast(data.into()).await.map_err(to_js_err)?;
+        // Parse the data as JSON to get ClientMessage
+        let json_str = String::from_utf8(data).map_err(to_js_err)?;
+        let client_message: ClientMessage = serde_json::from_str(&json_str).map_err(to_js_err)?;
+
+        tracing::info!("🟢 Browser sending ClientMessage: {:?}", client_message);
+
+        // Send as a signed Message::ClientMessage
+        let message = Message::ClientMessage(client_message);
+        self.inner
+            .broadcast_signed(message)
+            .await
+            .map_err(to_js_err)?;
+
+        tracing::info!("✅ Successfully sent signed ClientMessage to P2P network");
         Ok(())
     }
 
     pub async fn send_json(&self, json_str: &str) -> Result<(), JsError> {
-        let data = json_str.as_bytes().to_vec();
-        self.0.broadcast(data.into()).await.map_err(to_js_err)?;
+        let client_message: ClientMessage = serde_json::from_str(json_str).map_err(to_js_err)?;
+
+        tracing::info!(
+            "🟢 Browser sending ClientMessage (JSON): {:?}",
+            client_message
+        );
+
+        // Send as a signed Message::ClientMessage
+        let message = Message::ClientMessage(client_message);
+        self.inner
+            .broadcast_signed(message)
+            .await
+            .map_err(to_js_err)?;
+
+        tracing::info!("✅ Successfully sent signed ClientMessage to P2P network");
         Ok(())
     }
 }

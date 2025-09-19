@@ -23,6 +23,8 @@ argon2 = "0.5"
 clap = { version = "4.5.17", features = ["derive", "env"] }
 ctr = "0.9"
 data-encoding = "2.3"
+n0-future = "0.1.2"
+postcard = "1.1.1"
 prost = "0.13.4"
 rand = "0.8"
 serde = { version = "1.0.188", features = ["derive", "rc"] }

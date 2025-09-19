@@ -1,4 +1,4 @@
-import { SshxNode, Session, SessionSender } from "./browser";
+import { SshxNode, Session, SessionSender } from "sshx-web";
 
 // Type definitions for SSHX events
 export interface SshxEvent {
