@@ -1,0 +1,33 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2" }
+tokio = { workspace = true }
+tokio-util = "0.7"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+data-encoding = "2.6"
+rand = { workspace = true }
+url = "2.5"
+shared = { path = "../shared" }
+futures-lite = "2.3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+release-logging = []
+

@@ -3,13 +3,13 @@
 //! This module implements message signing and verification similar to the
 //! browser-chat example, ensuring message integrity and authenticity.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Result;
 use iroh::{PublicKey, SecretKey};
 use iroh_base::Signature;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
-
 #[cfg(target_arch = "wasm32")]
 use web_time::{SystemTime, UNIX_EPOCH};
 
@@ -37,7 +37,7 @@ pub enum WireMessage {
 }
 
 /// Message types for P2P communication
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// Client message (requests from browser to CLI)
     ClientMessage(ClientMessage),
@@ -75,21 +75,29 @@ impl SignedMessage {
         })
     }
 
-    /// Sign and encode a message
-    pub fn sign_and_encode(secret_key: &SecretKey, message: Message) -> Result<Vec<u8>> {
+    /// Create a new signed message
+    pub fn new(secret_key: &SecretKey, message: &Message) -> Result<Self> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
-        let wire_message = WireMessage::VO { timestamp, message };
+        let wire_message = WireMessage::VO {
+            timestamp,
+            message: message.clone(),
+        };
         let data = postcard::to_stdvec(&wire_message)?;
         let signature = secret_key.sign(&data);
         let from: PublicKey = secret_key.public();
-        let signed_message = Self {
+        Ok(Self {
             from,
             data,
             signature,
-        };
+        })
+    }
+
+    /// Sign and encode a message
+    pub fn sign_and_encode(secret_key: &SecretKey, message: Message) -> Result<Vec<u8>> {
+        let signed_message = Self::new(secret_key, &message)?;
         let encoded = postcard::to_stdvec(&signed_message)?;
         Ok(encoded)
     }

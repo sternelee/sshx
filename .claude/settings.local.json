@@ -12,7 +12,9 @@
       "Bash(cargo build:*)",
       "Bash(cargo:*)",
       "Bash(rustc:*)",
-      "Bash(wasm-pack:*)"
+      "Bash(wasm-pack:*)",
+      "Bash(sed:*)",
+      "Bash(pnpm build:wasm:release:*)"
     ],
     "deny": [],
     "ask": []

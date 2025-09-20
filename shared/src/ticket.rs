@@ -1,14 +1,15 @@
 //! Ticket system for session sharing and P2P connections.
-//! 
-//! This implementation follows the browser-chat.txt reference using postcard serialization
-//! and BTreeSet<NodeId> for bootstrap nodes.
+//!
+//! This implementation follows the browser-chat.txt reference using postcard
+//! serialization and BTreeSet<NodeId> for bootstrap nodes.
+
+use std::{collections::BTreeSet, fmt, str::FromStr};
 
 use anyhow::Result;
+use iroh::NodeId;
 use iroh_base::ticket::Ticket;
 use iroh_gossip::proto::TopicId;
-use iroh::NodeId;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fmt, str::FromStr};
 
 /// A ticket that contains the necessary information to join a session.
 /// Following the ChatTicket pattern from browser-chat.txt reference.
@@ -77,7 +78,8 @@ impl SessionTicket {
     }
 }
 
-/// Implement the Ticket trait for SessionTicket to match browser-chat.txt pattern
+/// Implement the Ticket trait for SessionTicket to match browser-chat.txt
+/// pattern
 impl Ticket for SessionTicket {
     const KIND: &'static str = "sshx";
 
@@ -94,6 +96,7 @@ impl Ticket for SessionTicket {
 
 impl FromStr for SessionTicket {
     type Err = anyhow::Error;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::deserialize(s)
     }

@@ -13,6 +13,7 @@ pub mod events;
 pub mod message;
 pub mod p2p;
 pub mod session;
+pub mod session_manager;
 pub mod ticket;
 
 // Re-export commonly used types
@@ -23,6 +24,10 @@ pub use events::{
 pub use message::{Message, ReceivedMessage, SignedMessage};
 pub use p2p::{P2pNode, P2pSession};
 pub use session::{CloseRequest, CloseResponse, OpenRequest, OpenResponse};
+pub use session_manager::{
+    close_shell_message, create_input_message, create_shell_message, ManagedSession,
+    MessageHandler, SessionConfig, SessionManager, SimpleMessageHandler,
+};
 pub use ticket::SessionTicket;
 
 /// Unique identifier for a shell within the session.

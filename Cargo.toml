@@ -1,5 +1,5 @@
 [workspace]
-members = ["cli", "shared", "browser"]
+members = ["cli", "shared", "browser", "app"]
 resolver = "2"
 
 [workspace.package]
@@ -34,6 +34,15 @@ tokio = { version = "1.40.0", features = ["full"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tauri = { version = "2" }
+aead = "0.5"
+bincode = "1.3"
+brotli = "3.4"
+base64 = "0.22"
+hex = "0.4"
+uuid = { version = "1.0", features = ["v4"] }
+futures = "0.3"
+tokio-util = "0.7"
 
 [profile.release]
 strip = true
