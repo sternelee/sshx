@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{Sid, Uid};
+use iroh::NodeId;
+use n0_future::time::Duration;
 
 /// Details of bytes exchanged with the terminal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,4 +85,37 @@ pub enum SessionEvent {
         /// Error message.
         message: String,
     },
+}
+
+/// P2P network events following the browser-chat.txt reference pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum Event {
+    /// A new peer joined the session
+    Joined {
+        neighbors: Vec<NodeId>,
+    },
+    /// A message was received
+    MessageReceived {
+        from: NodeId,
+        text: String,
+        nickname: String,
+        sent_timestamp: u64,
+    },
+    /// A presence update was received
+    Presence {
+        from: NodeId,
+        nickname: String,
+        sent_timestamp: u64,
+    },
+    /// A new peer connected
+    NeighborUp {
+        node_id: NodeId,
+    },
+    /// A peer disconnected
+    NeighborDown {
+        node_id: NodeId,
+    },
+    /// The client is lagging behind
+    Lagged,
 }

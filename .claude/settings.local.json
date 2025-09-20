@@ -9,7 +9,10 @@
       "Bash(fd:*)",
       "Bash(grep:*)",
       "Bash(cargo search:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(cargo:*)",
+      "Bash(rustc:*)",
+      "Bash(wasm-pack:*)"
     ],
     "deny": [],
     "ask": []

@@ -98,12 +98,12 @@ export class SshxAPI {
   }
 
   async createSession(): Promise<string> {
-    const session = await this.node.create();
+    const session = await this.node.create("me");
     return this.setupSession(session);
   }
 
   async joinSession(ticket: string): Promise<string> {
-    const session = await this.node.join(ticket);
+    const session = await this.node.join(ticket, "me");
     return this.setupSession(session);
   }
 

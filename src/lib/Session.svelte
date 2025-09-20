@@ -150,26 +150,42 @@
     console.log("ticket", ticket);
 
     try {
+      console.log("🚀 Starting session creation/join process...");
+      
       if (ticket) {
+        console.log("📋 Joining existing session with ticket:", ticket);
         currentSessionId = await sshxApi.joinSession(ticket);
       } else {
+        console.log("🆕 Creating new session...");
         currentSessionId = await sshxApi.createSession();
+        console.log("✅ Session created with ID:", currentSessionId);
+        
         // Get the ticket for sharing
         const newTicket = sshxApi.getSessionTicket(currentSessionId);
+        console.log("🎫 Generated ticket for sharing:", newTicket);
+        
         // Update URL with the new ticket
         const url = new URL(window.location.href);
         url.searchParams.set("ticket", newTicket);
         window.history.pushState({}, "", url.toString());
+        console.log("🔗 URL updated with ticket");
       }
 
-      console.log("Created session:", currentSessionId);
+      console.log("📡 Session established:", currentSessionId);
       // Subscribe to session events
       if (currentSessionId) {
+        console.log("🔔 Subscribing to session events...");
         sshxApi.subscribeToEvents(currentSessionId, handleEvent);
       }
     } catch (error) {
-      console.error("Failed to create/join session:", error);
-      exitReason = "Failed to connect to P2P session.";
+      console.error("❌ Failed to create/join session:", error);
+      console.error("🔍 Error details:", {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        toString: error.toString()
+      });
+      exitReason = `Failed to connect to P2P session: ${error.message}`;
     }
   });
 

@@ -7,7 +7,11 @@ use anyhow::Result;
 use iroh::{PublicKey, SecretKey};
 use iroh_base::Signature;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(target_arch = "wasm32")]
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     events::{ClientMessage, ServerMessage, SessionEvent},
@@ -41,8 +45,8 @@ pub enum Message {
     ServerMessage(ServerMessage),
     /// Session event (notifications about session state)
     SessionEvent(SessionEvent),
-    /// Presence message to indicate user status
-    Presence { user_id: Uid, name: Option<String> },
+    /// Presence message to indicate user status (following reference pattern)
+    Presence { nickname: String },
 }
 
 /// Received message with metadata

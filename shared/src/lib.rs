@@ -18,7 +18,7 @@ pub mod ticket;
 // Re-export commonly used types
 pub use crypto::{rand_alphanumeric, Encryptor};
 pub use events::{
-    ClientMessage, ServerMessage, SessionEvent, TerminalData, TerminalInput, TerminalSize,
+    ClientMessage, Event, ServerMessage, SessionEvent, TerminalData, TerminalInput, TerminalSize,
 };
 pub use message::{Message, ReceivedMessage, SignedMessage};
 pub use p2p::{P2pNode, P2pSession};

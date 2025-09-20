@@ -14,7 +14,7 @@ struct Args {
     #[clap(long)]
     shell: Option<String>,
 
-    /// Quiet mode, only prints the URL to stdout.
+    /// Quiet mode, only prints the Ticket to stdout.
     #[clap(short, long)]
     quiet: bool,
 }
@@ -28,13 +28,13 @@ fn print_greeting(shell: &str, controller: &Controller) {
         r#"
   {sshx} {version}
 
-  {arr}  Link:  {link}
+  {arr}  Ticket:  {ticket}
   {arr}  Shell: {shell}
 "#,
         sshx = Green.bold().paint("sshx"),
         version = Green.paint(&version_str),
         arr = Green.paint("➜"),
-        link = Cyan.underline().paint(controller.url()),
+        ticket = Cyan.underline().paint(controller.ticket()),
         shell = Fixed(8).paint(shell),
     );
 }
@@ -50,7 +50,7 @@ async fn start(args: Args) -> Result<()> {
     let mut controller = Controller::new(runner).await?;
 
     if args.quiet {
-        println!("{}", controller.url());
+        println!("{}", controller.ticket());
     } else {
         print_greeting(&shell, &controller);
     }
