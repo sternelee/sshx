@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use futures_lite::StreamExt;
 use n0_future::boxed::BoxStream;
-use rand::RngCore;
 use shared::{
-    crypto::rand_alphanumeric,
     events::{ClientMessage, Event, ServerMessage, TerminalInput},
     message::Message,
     p2p::{P2pNode, P2pSessionSender},
@@ -42,11 +40,21 @@ impl Controller {
     /// Construct a new controller with P2P networking.
     pub async fn new(runner: Runner) -> Result<Self> {
         let p2p_node = P2pNode::new().await?;
-        println!("> P2P node id: {}", p2p_node.node_id());
+        let node_id = p2p_node.node_id();
+        println!("> P2P node id: {}", node_id);
+
+        // Get the node's actual addresses for better connectivity
+        let node_addr = p2p_node.node_addr().await?;
+        let addresses: Vec<_> = node_addr.direct_addresses().collect();
+        println!("> Node addresses: {:?}", addresses);
 
         // Generate session ticket following reference implementation
         let ticket = SessionTicket::new_random();
+        println!("> Created session topic: {}", ticket.topic_id);
+        
+        // Don't add ourselves as bootstrap - let the browser connect independently
         let ticket_str = ticket.serialize();
+        println!("> Session ticket (no bootstrap): {}", ticket_str);
 
         // Create P2P session with server nickname
         let (p2p_sender, p2p_receiver) = p2p_node.join(&ticket, "sshx-server".to_string()).await?;
@@ -117,6 +125,10 @@ impl Controller {
     /// Handle P2P events from the network
     async fn handle_p2p_event(&mut self, event: Event) {
         match event {
+            Event::ClientMessageReceived { from, message, sent_timestamp: _ } => {
+                println!("📨 CLI received direct ClientMessage from {}: {:?}", from, message);
+                self.handle_client_message_from_browser(message).await;
+            }
             Event::MessageReceived {
                 from,
                 text,
@@ -124,17 +136,31 @@ impl Controller {
                 sent_timestamp: _,
             } => {
                 println!(
-                    "📨 CLI received message from {}: {} ({})",
+                    "📨 CLI received legacy message from {}: {} ({})",
                     from, text, nickname
                 );
 
-                // Try to parse as ClientMessage JSON
+                // Try to parse as ClientMessage JSON (backward compatibility)
                 if let Ok(client_message) = serde_json::from_str::<ClientMessage>(&text) {
-                    println!("✅ Parsed as ClientMessage, processing...");
+                    println!("✅ Parsed legacy ClientMessage, processing...");
                     self.handle_client_message_from_browser(client_message)
                         .await;
                 } else {
-                    println!("⚠️ Could not parse message as ClientMessage: {}", text);
+                    // 如果直接解析失败，尝试解析嵌套的 JSON
+                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Ok(client_message) = serde_json::from_value(json_value) {
+                            println!("✅ Parsed nested ClientMessage, processing...");
+                            self.handle_client_message_from_browser(client_message)
+                                .await;
+                        } else {
+                            println!(
+                                "⚠️ Could not parse nested message as ClientMessage: {}",
+                                text
+                            );
+                        }
+                    } else {
+                        println!("⚠️ Could not parse message as JSON: {}", text);
+                    }
                 }
             }
             Event::Presence {
@@ -155,6 +181,11 @@ impl Controller {
                 for neighbor in neighbors {
                     println!("  - {}", neighbor);
                 }
+            }
+            Event::ServerMessageReceived { from, message, sent_timestamp: _ } => {
+                println!("📨 CLI received direct ServerMessage from {}: {:?}", from, message);
+                // Server messages are typically not processed by CLI, but we can log them
+                println!("⚠️ CLI received unexpected ServerMessage, this might indicate a routing issue");
             }
             Event::Lagged => {
                 warn!("⚠️ P2P stream lagged");

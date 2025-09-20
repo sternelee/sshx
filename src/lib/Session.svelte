@@ -93,7 +93,7 @@
   let encryptedZeros: Uint8Array;
   let writeEncryptedZeros: Uint8Array | null;
 
-  let connected = false;
+  let connected = true;
   let exitReason: string | null = null;
 
   /** Bound "write" method for each terminal. */

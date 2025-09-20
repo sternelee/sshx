@@ -12,7 +12,8 @@
       "Bash(cargo build:*)",
       "Bash(cargo:*)",
       "Bash(rustc:*)",
-      "Bash(wasm-pack:*)"
+      "Bash(wasm-pack:*)",
+      "Bash(timeout 10s cargo run -p cli)"
     ],
     "deny": [],
     "ask": []

@@ -128,14 +128,6 @@ export class SshxAPI {
     this.sessions.set(id, state);
     this.startEventStream(state);
 
-    // Notify that connection is established
-    setTimeout(() => {
-      for (const subscriber of state.subscribers) {
-        // Send a hello event to trigger connection handling
-        subscriber({ hello: [Date.now(), "connected"] });
-      }
-    }, 100);
-
     return id;
   }
 
@@ -243,9 +235,9 @@ export class SshxAPI {
     }
     // Create TicketOpts object as expected by the WASM module
     const ticketOpts = {
-      includeMySelf: includeSelf,
-      includeBootstrap: true,
-      includeNeighbors: false,
+      include_myself: includeSelf,
+      include_bootstrap: true,
+      include_neighbors: false,
     };
     return state.session.ticket(ticketOpts);
   }

@@ -15,7 +15,6 @@ use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     events::{ClientMessage, ServerMessage, SessionEvent},
-    Uid,
 };
 
 /// A signed message with sender information and signature

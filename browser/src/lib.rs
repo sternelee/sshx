@@ -1,11 +1,9 @@
-use std::str::FromStr;
-
 use anyhow::Result;
 use futures_lite::StreamExt;
-use rand::RngCore;
+use js_sys::Uint8Array;
 use shared::{
     events::ClientMessage, Event,
-    message::{Message, SignedMessage},
+    message::Message,
     p2p::{P2pNode, P2pSessionSender},
     ticket::{SessionTicket, TicketOpts},
 };
@@ -141,12 +139,32 @@ impl Session {
             match event {
                 Ok(event) => {
                     tracing::debug!("✅ Received P2P event: {:?}", event);
-                    // Convert Event to JsValue using serde-wasm-bindgen
-                    serde_wasm_bindgen::to_value(&event)
-                        .map_err(|err| {
-                            tracing::error!("❌ Failed to serialize event to JsValue: {}", err);
-                            JsValue::from(&format!("Event serialization failed: {}", err))
-                        })
+                    match event {
+                        // Handle ServerMessage events specially - convert to binary JSON
+                        Event::ServerMessageReceived { from: _, message, sent_timestamp: _ } => {
+                            tracing::info!("📨 Browser received ServerMessage: {:?}", message);
+                            // Serialize ServerMessage to JSON bytes for TypeScript API
+                            match serde_json::to_vec(&message) {
+                                Ok(json_bytes) => {
+                                    tracing::debug!("✅ Serialized ServerMessage to {} bytes", json_bytes.len());
+                                    Ok(Uint8Array::from(&json_bytes[..]).into())
+                                }
+                                Err(err) => {
+                                    tracing::error!("❌ Failed to serialize ServerMessage to JSON: {}", err);
+                                    Err(JsValue::from(&format!("ServerMessage serialization failed: {}", err)))
+                                }
+                            }
+                        }
+                        // Handle other event types using normal serialization
+                        _ => {
+                            // Convert Event to JsValue using serde-wasm-bindgen
+                            serde_wasm_bindgen::to_value(&event)
+                                .map_err(|err| {
+                                    tracing::error!("❌ Failed to serialize event to JsValue: {}", err);
+                                    JsValue::from(&format!("Event serialization failed: {}", err))
+                                })
+                        }
+                    }
                 }
                 Err(err) => {
                     tracing::error!("❌ Received error from P2P stream: {}", err);

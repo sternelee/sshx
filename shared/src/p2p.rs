@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId, SecretKey};
 use iroh_gossip::{
@@ -15,7 +15,6 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::{info, warn};
 
 use crate::{
-    events::ClientMessage,
     message::{Message, SignedMessage},
     ticket::SessionTicket,
     Event,
@@ -34,11 +33,27 @@ impl P2pNode {
     /// implementation
     pub async fn new() -> Result<Self> {
         let secret_key = SecretKey::generate(rand::rngs::OsRng);
-        let endpoint = Endpoint::builder()
-            .secret_key(secret_key.clone())
-            .alpns(vec![GOSSIP_ALPN.to_vec()])
-            .bind()
-            .await?;
+        
+        // Different configuration for different environments
+        let endpoint = if cfg!(target_arch = "wasm32") {
+            // WASM environment - simplified configuration with discovery
+            info!("Initializing P2P node for WASM environment");
+            Endpoint::builder()
+                .secret_key(secret_key.clone())
+                .discovery_n0() // WASM also needs discovery for relay connections
+                .alpns(vec![GOSSIP_ALPN.to_vec()])
+                .bind()
+                .await?
+        } else {
+            // Native environment - full discovery
+            info!("Initializing P2P node for native environment");
+            Endpoint::builder()
+                .secret_key(secret_key.clone())
+                .discovery_n0()
+                .alpns(vec![GOSSIP_ALPN.to_vec()])
+                .bind()
+                .await?
+        };
 
         let node_id = endpoint.node_id();
         info!("endpoint bound");
@@ -328,24 +343,18 @@ impl TryFrom<GossipEvent> for Event {
                         sent_timestamp: received_msg.timestamp,
                     },
                     Message::ClientMessage(client_msg) => {
-                        // Convert ClientMessage to text for now
-                        let text = serde_json::to_string(&client_msg)
-                            .unwrap_or_else(|_| "unknown message".to_string());
-                        Self::MessageReceived {
+                        // 直接传递 ClientMessage，避免双重序列化
+                        Self::ClientMessageReceived {
                             from: received_msg.from,
-                            text,
-                            nickname: "client".to_string(),
+                            message: client_msg,
                             sent_timestamp: received_msg.timestamp,
                         }
                     }
                     Message::ServerMessage(server_msg) => {
-                        // Convert ServerMessage to text for now
-                        let text = serde_json::to_string(&server_msg)
-                            .unwrap_or_else(|_| "server message".to_string());
-                        Self::MessageReceived {
+                        // 直接传递 ServerMessage，避免双重序列化
+                        Self::ServerMessageReceived {
                             from: received_msg.from,
-                            text,
-                            nickname: "server".to_string(),
+                            message: server_msg,
                             sent_timestamp: received_msg.timestamp,
                         }
                     }

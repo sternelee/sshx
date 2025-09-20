@@ -111,4 +111,16 @@ pub enum Event {
     NeighborDown { node_id: NodeId },
     /// The client is lagging behind
     Lagged,
+    /// Direct ClientMessage received (avoiding double serialization)
+    ClientMessageReceived {
+        from: NodeId,
+        message: ClientMessage,
+        sent_timestamp: u64,
+    },
+    /// Direct ServerMessage received (avoiding double serialization)
+    ServerMessageReceived {
+        from: NodeId,
+        message: ServerMessage,
+        sent_timestamp: u64,
+    },
 }
