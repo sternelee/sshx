@@ -479,6 +479,7 @@ dependencies = [
  "futures-lite",
  "iroh",
  "iroh-gossip",
+ "n0-future",
  "nix",
  "pin-project",
  "postcard",

@@ -20,6 +20,7 @@ data-encoding = "2.5.0"
 futures-lite = "2.3.0"
 iroh.workspace = true
 iroh-gossip = { workspace = true, features = ["net"] }
+n0-future = "0.1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 prost = "0.12.3"

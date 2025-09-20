@@ -1,6 +1,8 @@
 //! P2P networking module using iroh for distributed communication.
 
-use anyhow::{Context, Result, anyhow};
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
 use iroh::protocol::Router;
 use iroh::{Endpoint, NodeId, SecretKey};
 use iroh_gossip::{
@@ -8,13 +10,16 @@ use iroh_gossip::{
     net::{Gossip, GOSSIP_ALPN},
     proto::TopicId,
 };
-use std::sync::Arc;
-
 use n0_future::{boxed::BoxStream, stream::try_unfold, StreamExt};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{info, warn};
 
-use crate::{events::ClientMessage, message::{Message, SignedMessage}, ticket::SessionTicket, Event};
+use crate::{
+    events::ClientMessage,
+    message::{Message, SignedMessage},
+    ticket::SessionTicket,
+    Event,
+};
 
 /// P2P node for iroh networking using Router pattern from reference
 #[derive(Debug)]
@@ -25,7 +30,8 @@ pub struct P2pNode {
 }
 
 impl P2pNode {
-    /// Creates a new P2P node using Router architecture like reference implementation
+    /// Creates a new P2P node using Router architecture like reference
+    /// implementation
     pub async fn new() -> Result<Self> {
         let secret_key = SecretKey::generate(rand::rngs::OsRng);
         let endpoint = Endpoint::builder()
@@ -66,7 +72,8 @@ impl P2pNode {
         Ok(iroh::NodeAddr::new(node_id))
     }
 
-    /// Creates a new session with a ticket (same as join_session for consistency with reference)
+    /// Creates a new session with a ticket (same as join_session for
+    /// consistency with reference)
     pub async fn create_session(&self, ticket: SessionTicket) -> Result<P2pSession> {
         P2pSession::new(self, ticket).await
     }
@@ -77,7 +84,11 @@ impl P2pNode {
     }
 
     /// Joins a session following the reference implementation pattern
-    pub async fn join(&self, ticket: &SessionTicket, _nickname: String) -> Result<(P2pSessionSender, BoxStream<Result<crate::Event>>)> {
+    pub async fn join(
+        &self,
+        ticket: &SessionTicket,
+        _nickname: String,
+    ) -> Result<(P2pSessionSender, BoxStream<Result<crate::Event>>)> {
         let session = P2pSession::new(self, ticket.clone()).await?;
         let (sender, receiver) = session.split();
         Ok((sender, receiver))
@@ -162,12 +173,17 @@ impl P2pSession {
     }
 
     /// Returns the session ticket for sharing
-    pub fn ticket_with_opts(&self, opts: &crate::ticket::TicketOpts, node_id: NodeId) -> SessionTicket {
+    pub fn ticket_with_opts(
+        &self,
+        opts: &crate::ticket::TicketOpts,
+        node_id: NodeId,
+    ) -> SessionTicket {
         let mut ticket = self.ticket.clone();
         if opts.include_myself {
             ticket.bootstrap.insert(node_id);
         }
-        // Note: include_bootstrap and include_neighbors would require additional state tracking
+        // Note: include_bootstrap and include_neighbors would require additional state
+        // tracking
         ticket
     }
 
@@ -201,21 +217,21 @@ impl P2pSession {
     /// Creates a stream of our Event types
     pub fn event_stream(&mut self) -> Option<BoxStream<Result<Event>>> {
         self.receiver.take().map(|receiver| {
-            let stream = receiver
-                .map(|event| {
-                    event
-                        .map_err(|e| anyhow::anyhow!("Gossip event error: {}", e))
-                        .and_then(|gossip_event| gossip_event.try_into())
-                        .map_err(|e| {
-                            tracing::error!("Event conversion error: {}", e);
-                            e
-                        })
-                });
+            let stream = receiver.map(|event| {
+                event
+                    .map_err(|e| anyhow::anyhow!("Gossip event error: {}", e))
+                    .and_then(|gossip_event| gossip_event.try_into())
+                    .map_err(|e| {
+                        tracing::error!("Event conversion error: {}", e);
+                        e
+                    })
+            });
             Box::pin(stream) as BoxStream<Result<Event>>
         })
     }
 
-    /// Creates a stream of signed messages using try_unfold pattern like reference implementation
+    /// Creates a stream of signed messages using try_unfold pattern like
+    /// reference implementation
     pub fn signed_message_stream(&mut self) -> Option<BoxStream<Result<crate::ReceivedMessage>>> {
         self.receiver.take().map(|receiver| {
             // Use the try_unfold pattern from browser-chat.txt reference
@@ -259,16 +275,15 @@ impl P2pSession {
             sender: Arc::new(TokioMutex::new(self.sender.clone())),
         };
         let receiver = if let Some(receiver) = self.receiver.take() {
-            let stream = receiver
-                .map(|event| {
-                    event
-                        .map_err(|e| anyhow::anyhow!("Gossip event error: {}", e))
-                        .and_then(|gossip_event| gossip_event.try_into())
-                        .map_err(|e| {
-                            tracing::error!("Event conversion error: {}", e);
-                            e
-                        })
-                });
+            let stream = receiver.map(|event| {
+                event
+                    .map_err(|e| anyhow::anyhow!("Gossip event error: {}", e))
+                    .and_then(|gossip_event| gossip_event.try_into())
+                    .map_err(|e| {
+                        tracing::error!("Event conversion error: {}", e);
+                        e
+                    })
+            });
             Box::pin(stream) as BoxStream<Result<Event>>
         } else {
             Box::pin(n0_future::stream::empty())

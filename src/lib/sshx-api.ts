@@ -241,7 +241,13 @@ export class SshxAPI {
     if (!state) {
       throw new Error(`Session ${sessionId} not found`);
     }
-    return state.session.ticket(includeSelf);
+    // Create TicketOpts object as expected by the WASM module
+    const ticketOpts = {
+      includeMySelf: includeSelf,
+      includeBootstrap: true,
+      includeNeighbors: false,
+    };
+    return state.session.ticket(ticketOpts);
   }
 
   getSessionInfo(sessionId: string): { id: string; connected: boolean } | null {

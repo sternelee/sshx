@@ -23,6 +23,9 @@
   import { settings } from "./settings";
   import { EyeIcon } from "svelte-feather-icons";
 
+  // Props
+  export let id: string | undefined = undefined;
+
   // The magic numbers "left" and "top" are used to approximately center the
   // terminal at the time that it is first created.
   const CONSTANT_OFFSET_LEFT = 378;
@@ -145,13 +148,13 @@
       return;
     }
 
-    // Try to create or join session based on URL
-    const ticket = new URLSearchParams(window.location.search).get("ticket");
+    // Try to create or join session based on the id prop (from URL path)
+    const ticket = id && id !== "p2p" ? id : null;
     console.log("ticket", ticket);
 
     try {
       console.log("🚀 Starting session creation/join process...");
-      
+
       if (ticket) {
         console.log("📋 Joining existing session with ticket:", ticket);
         currentSessionId = await sshxApi.joinSession(ticket);
@@ -159,15 +162,14 @@
         console.log("🆕 Creating new session...");
         currentSessionId = await sshxApi.createSession();
         console.log("✅ Session created with ID:", currentSessionId);
-        
+
         // Get the ticket for sharing
         const newTicket = sshxApi.getSessionTicket(currentSessionId);
         console.log("🎫 Generated ticket for sharing:", newTicket);
-        
-        // Update URL with the new ticket
-        const url = new URL(window.location.href);
-        url.searchParams.set("ticket", newTicket);
-        window.history.pushState({}, "", url.toString());
+
+        // Update URL to show the ticket in the path
+        const newUrl = `/t/${newTicket}${window.location.hash}`;
+        window.history.pushState({}, "", newUrl);
         console.log("🔗 URL updated with ticket");
       }
 

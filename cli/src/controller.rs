@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use futures_lite::StreamExt;
+use n0_future::boxed::BoxStream;
 use rand::RngCore;
 use shared::{
     crypto::rand_alphanumeric,
@@ -26,6 +27,7 @@ pub struct Controller {
     runner: Runner,
     encrypt: Encrypt,
     p2p_sender: P2pSessionSender,
+    p2p_receiver: BoxStream<Result<Event>>,
     ticket: String,
 
     /// Channels with backpressure routing messages to each shell task.
@@ -47,7 +49,7 @@ impl Controller {
         let ticket_str = ticket.serialize();
 
         // Create P2P session with server nickname
-        let (p2p_sender, _receiver) = p2p_node.join(&ticket, "sshx-server".to_string()).await?;
+        let (p2p_sender, p2p_receiver) = p2p_node.join(&ticket, "sshx-server".to_string()).await?;
 
         let encrypt = task::spawn_blocking(move || Encrypt::new(&ticket.key)).await?;
 
@@ -56,6 +58,7 @@ impl Controller {
             runner,
             encrypt,
             p2p_sender,
+            p2p_receiver,
             ticket: ticket_str,
             shells_tx: HashMap::new(),
             output_tx,
@@ -95,14 +98,66 @@ impl Controller {
                         println!("✅ Successfully broadcasted signed message to P2P network");
                     }
                 }
-                // 2. Placeholder for incoming messages (would need receiver from split)
-                _ = async {
-                    // TODO: Implement proper message receiving using the new architecture
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await
-                } => {
-                    // For now, just continue the loop
-                    continue;
+                // 2. Handle incoming P2P events from browser clients
+                Some(event_result) = self.p2p_receiver.next() => {
+                    match event_result {
+                        Ok(event) => {
+                            println!("📨 CLI received P2P event: {:?}", event);
+                            self.handle_p2p_event(event).await;
+                        }
+                        Err(e) => {
+                            warn!("❌ P2P event error: {}", e);
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    /// Handle P2P events from the network
+    async fn handle_p2p_event(&mut self, event: Event) {
+        match event {
+            Event::MessageReceived {
+                from,
+                text,
+                nickname,
+                sent_timestamp: _,
+            } => {
+                println!(
+                    "📨 CLI received message from {}: {} ({})",
+                    from, text, nickname
+                );
+
+                // Try to parse as ClientMessage JSON
+                if let Ok(client_message) = serde_json::from_str::<ClientMessage>(&text) {
+                    println!("✅ Parsed as ClientMessage, processing...");
+                    self.handle_client_message_from_browser(client_message)
+                        .await;
+                } else {
+                    println!("⚠️ Could not parse message as ClientMessage: {}", text);
+                }
+            }
+            Event::Presence {
+                from,
+                nickname,
+                sent_timestamp: _,
+            } => {
+                println!("👋 Presence update from {}: {}", from, nickname);
+            }
+            Event::NeighborUp { node_id } => {
+                println!("🔗 Neighbor connected: {}", node_id);
+            }
+            Event::NeighborDown { node_id } => {
+                println!("💔 Neighbor disconnected: {}", node_id);
+            }
+            Event::Joined { neighbors } => {
+                println!("🎉 Joined P2P network with {} neighbors", neighbors.len());
+                for neighbor in neighbors {
+                    println!("  - {}", neighbor);
+                }
+            }
+            Event::Lagged => {
+                warn!("⚠️ P2P stream lagged");
             }
         }
     }

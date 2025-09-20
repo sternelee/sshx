@@ -1,10 +1,9 @@
 //! Event and message types for sshx communication.
 
+use iroh::NodeId;
 use serde::{Deserialize, Serialize};
 
 use crate::{Sid, Uid};
-use iroh::NodeId;
-use n0_future::time::Duration;
 
 /// Details of bytes exchanged with the terminal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,9 +91,7 @@ pub enum SessionEvent {
 #[serde(tag = "type", content = "data")]
 pub enum Event {
     /// A new peer joined the session
-    Joined {
-        neighbors: Vec<NodeId>,
-    },
+    Joined { neighbors: Vec<NodeId> },
     /// A message was received
     MessageReceived {
         from: NodeId,
@@ -109,13 +106,9 @@ pub enum Event {
         sent_timestamp: u64,
     },
     /// A new peer connected
-    NeighborUp {
-        node_id: NodeId,
-    },
+    NeighborUp { node_id: NodeId },
     /// A peer disconnected
-    NeighborDown {
-        node_id: NodeId,
-    },
+    NeighborDown { node_id: NodeId },
     /// The client is lagging behind
     Lagged,
 }
