@@ -338,34 +338,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "102dbef1187b1893e6dfe05a774e79fd52265f49f214f6879c8ff49f52c8188b"
 
 [[package]]
-name = "browser"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "console_error_panic_hook",
- "data-encoding",
- "futures-lite",
- "getrandom 0.2.16",
- "iroh",
- "iroh-base",
- "iroh-gossip",
- "js-sys",
- "n0-future",
- "prost",
- "rand 0.8.5",
- "serde",
- "serde-wasm-bindgen 0.6.5",
- "serde_json",
- "shared",
- "tracing",
- "tracing-subscriber",
- "tracing-subscriber-wasm",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-streams",
-]
-
-[[package]]
 name = "btparse"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3638,6 +3610,35 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "sshx-web"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "data-encoding",
+ "futures-lite",
+ "getrandom 0.2.16",
+ "iroh",
+ "iroh-base",
+ "iroh-gossip",
+ "js-sys",
+ "n0-future",
+ "prost",
+ "rand 0.8.5",
+ "serde",
+ "serde-wasm-bindgen 0.6.5",
+ "serde_json",
+ "shared",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-subscriber-wasm",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams",
+ "web-time",
 ]
 
 [[package]]

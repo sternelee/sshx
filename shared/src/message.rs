@@ -3,14 +3,14 @@
 //! This module implements message signing and verification similar to the
 //! browser-chat example, ensuring message integrity and authenticity.
 
+#[cfg(not(feature = "wasm"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Result;
 use iroh::{PublicKey, SecretKey};
 use iroh_base::Signature;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_arch = "wasm32")]
+#[cfg(feature = "wasm")]
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::{

@@ -334,7 +334,7 @@ export class SshxAPI {
     console.log("🔄 Converting ServerMessage to SshxEvent:", serverMessage);
 
     switch (serverMessage.type) {
-      case "Data":
+      case "Data": {
         const dataEvent: SshxEvent = {
           chunks: [
             serverMessage.data.id as number,
@@ -344,8 +344,9 @@ export class SshxAPI {
         };
         console.log("📊 Created Data event:", dataEvent);
         return dataEvent;
+      }
 
-      case "CreatedShell":
+      case "CreatedShell": {
         const createdEvent: SshxEvent = {
           shells: [
             [
@@ -356,20 +357,23 @@ export class SshxAPI {
         };
         console.log("🐚 Created CreatedShell event:", createdEvent);
         return createdEvent;
+      }
 
-      case "ClosedShell":
+      case "ClosedShell": {
         const closedEvent: SshxEvent = {
           shells: [], // Empty shells array triggers shell removal
         };
         console.log("❌ Created ClosedShell event:", closedEvent);
         return closedEvent;
+      }
 
-      case "Error":
+      case "Error": {
         const errorEvent: SshxEvent = {
           error: serverMessage.data.message as string,
         };
         console.log("🔥 Created Error event:", errorEvent);
         return errorEvent;
+      }
 
       default:
         console.warn("⚠️ Unknown server message type:", serverMessage.type);
