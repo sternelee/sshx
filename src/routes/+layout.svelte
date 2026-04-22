@@ -1,7 +1,7 @@
 <script lang="ts">
   import "@fontsource-variable/inter";
 
-  import "sshx-xterm/css/xterm.css";
+  import "@wterm/dom/css";
   import "../app.css";
 
   import ToastContainer from "$lib/ui/ToastContainer.svelte";

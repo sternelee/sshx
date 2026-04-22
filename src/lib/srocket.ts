@@ -92,6 +92,9 @@ export class Srocket<T, U> {
       this.#stateChange(true);
     };
     this.#ws.onclose = (event) => {
+      console.warn(
+        `[srocket] WebSocket closed — code=${event.code} wasClean=${event.wasClean} reason="${event.reason}"`,
+      );
       this.#options.onClose?.(event);
       this.#ws = null;
       this.#stateChange(false);

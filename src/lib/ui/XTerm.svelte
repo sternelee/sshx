@@ -1,4 +1,4 @@
-<!-- @component Interactive terminal rendered with xterm.js -->
+<!-- @component Interactive terminal rendered with wterm -->
 <script lang="ts" context="module">
   import { makeToast } from "$lib/toast";
 
@@ -36,14 +36,12 @@
   import { browser } from "$app/environment";
 
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
-  import type { Terminal } from "sshx-xterm";
-  import { Buffer } from "buffer";
+  import { WTerm } from "@wterm/dom";
 
-  import themes from "./themes";
+  import themes, { applyTheme } from "./themes";
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import { settings } from "$lib/settings";
-  import { TypeAheadAddon } from "$lib/typeahead";
 
   /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
@@ -54,176 +52,235 @@
     shrink: void;
     expand: void;
     bringToFront: void;
-    startMove: MouseEvent;
+    startMove: PointerEvent;
     focus: void;
     blur: void;
+    cellsize: { charWidth: number; rowHeight: number };
   }>();
-
-  const typeahead = new TypeAheadAddon();
 
   export let rows: number, cols: number;
   export let write: (data: string) => void; // bound function prop
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
-  let term: Terminal | null = null;
+  let term: WTerm | null = null;
+  export let charWidth = 0;
+  export let rowHeight = 0;
 
   $: theme = themes[$settings.theme];
 
-  $: if (term) {
-    // If the theme changes, update existing terminals' appearance.
-    term.options.theme = theme;
-    term.options.scrollback = $settings.scrollback;
+  $: if (term && termEl) {
+    applyTheme(termEl, theme);
   }
 
   let loaded = false;
   let focused = false;
   let currentTitle = "Remote Terminal";
+  const utf8 = new TextEncoder();
 
-  function handleWheelSkipXTerm(event: WheelEvent) {
-    event.preventDefault(); // Stop native macOS Chrome zooming on pinch.
+  // Keyboard shortcuts for natural text editing.
+  function handleKeydown(event: KeyboardEvent) {
+    if (!focused) return;
+    const target = event.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
 
-    // We stop the event from propagating to the main `.xterm` terminal element,
-    // so the xterm.js's event handlers do not fire and scroll the buffer.
-    event.stopPropagation();
-
-    // However, we still want it to propagate upward to our pan/zoom handlers,
-    // so we re-dispatch the event higher up, skipping xterm.
-    termEl?.dispatchEvent(new WheelEvent(event.type, event));
+    if (
+      (isMac && event.metaKey && !event.ctrlKey && !event.altKey) ||
+      (!isMac && !event.metaKey && event.ctrlKey && !event.altKey)
+    ) {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        dispatch("data", new Uint8Array([0x01]));
+        return;
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        dispatch("data", new Uint8Array([0x05]));
+        return;
+      } else if (event.key === "Backspace") {
+        event.preventDefault();
+        dispatch("data", new Uint8Array([0x15]));
+        return;
+      }
+    }
   }
 
-  function setFocused(isFocused: boolean, cursorLayer: HTMLDivElement) {
-    if (isFocused && !focused) {
-      focused = isFocused;
-      cursorLayer.removeEventListener("wheel", handleWheelSkipXTerm);
-      dispatch("focus");
-    } else if (!isFocused && focused) {
-      focused = isFocused;
-      cursorLayer.addEventListener("wheel", handleWheelSkipXTerm);
-      dispatch("blur");
+  function handleWheel(event: WheelEvent) {
+    if (focused) {
+      event.stopPropagation();
     }
+  }
+
+  let isDragging = false;
+
+  function handleTitlePointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    isDragging = true;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dispatch("startMove", event);
+  }
+
+  function handleTitlePointerMove(event: PointerEvent) {
+    if (!isDragging) return;
+    dispatch("startMove", event);
+  }
+
+  function handleTitlePointerUp(event: PointerEvent) {
+    if (!isDragging) return;
+    isDragging = false;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    dispatch("startMove", event);
   }
 
   const preloadBuffer: string[] = [];
 
   write = (data: string) => {
     if (!term) {
-      // Before the terminal is loaded, push data into a buffer.
       preloadBuffer.push(data);
     } else {
-      if (data) data = typeahead.onBeforeProcessData(data);
       term.write(data);
     }
   };
 
-  $: term?.resize(cols, rows);
+  function measureCharSize() {
+    if (!termEl) return;
+    const grid = termEl.querySelector(".term-grid") as HTMLElement | null;
+    if (!grid) return;
+
+    // Create a single-character block identical to how wterm renders cells,
+    // using the same class so CSS (font, line-height, row-height) is inherited.
+    const row = document.createElement("div");
+    row.className = "term-row";
+    row.style.visibility = "hidden";
+    row.style.position = "absolute";
+    row.style.top = "0";
+    row.style.left = "0";
+    const block = document.createElement("span");
+    block.className = "term-block";
+    block.textContent = "W";
+    row.appendChild(block);
+    grid.appendChild(row);
+
+    const rowRect = row.getBoundingClientRect();
+    const blockRect = block.getBoundingClientRect();
+    const measuredRowHeight = rowRect.height;
+    const measuredCharWidth = blockRect.width;
+    row.remove();
+
+    // Sanity-check: reject implausible measurements that can occur when the
+    // grid is mid-render or CSS is not yet fully applied.
+    if (measuredRowHeight >= 4 && measuredRowHeight <= 200) {
+      rowHeight = measuredRowHeight;
+    } else if (!rowHeight) {
+      rowHeight = 17; // safe fallback
+    }
+    if (measuredCharWidth >= 1 && measuredCharWidth <= 100) {
+      charWidth = measuredCharWidth;
+    } else if (!charWidth) {
+      charWidth = 9; // safe fallback
+    }
+
+    // Keep wterm's internal CSS variable in sync so that its renderer does
+    // not create rows with an exploding height.
+    termEl.style.setProperty("--term-row-height", `${rowHeight}px`);
+  }
+
+  function updateSize(c: number, r: number) {
+    if (!termEl || charWidth <= 0 || rowHeight <= 0) return;
+    if (!Number.isFinite(c) || !Number.isFinite(r)) return;
+    if (c < 1 || r < 1) return;
+    const padding = 12 * 2; // wterm .wterm padding: 12px
+    let w = c * charWidth + padding;
+    let h = r * rowHeight + padding;
+    // Hard pixel limits as a last line of defence against exploding sizes.
+    w = Math.min(w, 3000);
+    h = Math.min(h, 4000);
+    termEl.style.boxSizing = "border-box";
+    termEl.style.width = `${w}px`;
+    termEl.style.height = `${h}px`;
+  }
+
+  $: if (
+    term &&
+    charWidth > 0 &&
+    Number.isFinite(cols) &&
+    Number.isFinite(rows)
+  ) {
+    term.resize(cols, rows);
+    updateSize(cols, rows);
+  }
 
   onMount(async () => {
-    const [{ Terminal }, { WebLinksAddon }, { WebglAddon }, { ImageAddon }] =
-      await Promise.all([
-        import("sshx-xterm"),
-        import("xterm-addon-web-links"),
-        import("xterm-addon-webgl"),
-        import("xterm-addon-image"),
-      ]);
-
     await waitForFonts();
 
-    term = new Terminal({
-      allowTransparency: false,
+    // wterm requires element to be in DOM before init
+    term = new WTerm(termEl, {
+      cols,
+      rows,
       cursorBlink: false,
-      cursorStyle: "block",
-      // This is the monospace font family configured in Tailwind.
-      fontFamily:
-        '"Fira Code VF", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      fontSize: 14,
-      fontWeight: 400,
-      fontWeightBold: 500,
-      lineHeight: 1.06,
-      scrollback: $settings.scrollback,
-      theme,
+      autoResize: false,
+      onData: (data: string) => {
+        dispatch("data", utf8.encode(data));
+      },
+      onTitle: (title: string) => {
+        currentTitle = title;
+      },
     });
 
-    // Keyboard shortcuts for natural text editing.
-    term.attachCustomKeyEventHandler((event) => {
-      if (
-        (isMac && event.metaKey && !event.ctrlKey && !event.altKey) ||
-        (!isMac && !event.metaKey && event.ctrlKey && !event.altKey)
-      ) {
-        if (event.key === "ArrowLeft") {
-          dispatch("data", new Uint8Array([0x01]));
-          return false;
-        } else if (event.key === "ArrowRight") {
-          dispatch("data", new Uint8Array([0x05]));
-          return false;
-        } else if (event.key === "Backspace") {
-          dispatch("data", new Uint8Array([0x15]));
-          return false;
-        }
-      }
-      return true;
-    });
+    // Apply CSS variables for theme without overwriting inline styles
+    applyTheme(termEl, theme);
 
-    term.loadAddon(new WebLinksAddon());
-    term.loadAddon(new WebglAddon());
-    term.loadAddon(new ImageAddon({ enableSizeReports: false }));
+    await term.init();
 
-    term.open(termEl);
+    measureCharSize();
+    updateSize(cols, rows);
+    dispatch("cellsize", { charWidth, rowHeight });
 
-    term.resize(cols, rows);
-    term.onTitleChange((title) => {
-      currentTitle = title;
-    });
-
-    // Hack: We artificially disable scrolling when the terminal is not focused.
-    // ("termEl" > div.terminal.xterm > div.xterm-screen)
-    const screenEl = termEl.querySelector(".xterm-screen")! as HTMLDivElement;
-    screenEl.addEventListener("wheel", handleWheelSkipXTerm);
-
-    const focusObserver = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (
-          mutation.type === "attributes" &&
-          mutation.attributeName === "class"
-        ) {
-          // The "focus" class is set directly by xterm.js, but there isn't any way to listen for it.
-          const target = mutation.target as HTMLElement;
-          const isFocused = target.classList.contains("focus");
-          setFocused(isFocused, screenEl);
-        }
+    // Handle focus/blur via click on terminal element
+    termEl.addEventListener("click", () => {
+      if (!focused) {
+        focused = true;
+        term?.focus();
+        dispatch("focus");
       }
     });
-    focusObserver.observe(term.element!, { attributeFilter: ["class"] });
+
+    // Global blur detection
+    const handleBlur = () => {
+      if (focused) {
+        focused = false;
+        dispatch("blur");
+      }
+    };
+    window.addEventListener("blur", handleBlur);
 
     loaded = true;
     for (const data of preloadBuffer) {
       term.write(data);
     }
-
-    typeahead.reset();
-    term.loadAddon(typeahead);
-
-    const utf8 = new TextEncoder();
-    term.onData((data: string) => {
-      dispatch("data", utf8.encode(data));
-    });
-    term.onBinary((data: string) => {
-      dispatch("data", Buffer.from(data, "binary"));
-    });
   });
 
-  onDestroy(() => term?.dispose());
+  onDestroy(() => {
+    term?.destroy();
+  });
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div
   class="term-container"
   class:focused
+  class:dragging={isDragging}
   style:background={theme.background}
-  on:mousedown={() => dispatch("bringToFront")}
+  on:mousedown={() => {
+    if (!isDragging) dispatch("bringToFront");
+  }}
   on:pointerdown={(event) => event.stopPropagation()}
 >
   <div
     class="flex select-none"
-    on:mousedown={(event) => dispatch("startMove", event)}
+    on:pointerdown={handleTitlePointerDown}
+    on:pointermove={handleTitlePointerMove}
+    on:pointerup={handleTitlePointerUp}
+    on:pointercancel={handleTitlePointerUp}
   >
     <div class="flex-1 flex items-center px-3">
       <CircleButtons>
@@ -253,16 +310,10 @@
     <div class="flex-1" />
   </div>
   <div
-    class="inline-block px-4 py-2 transition-opacity duration-500"
+    class="block transition-opacity duration-500"
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
-    on:wheel={(event) => {
-      if (focused) {
-        // Don't pan the page when scrolling while the terminal is selected.
-        // Conversely, we manually disable terminal scrolling unless it is currently selected.
-        event.stopPropagation();
-      }
-    }}
+    on:wheel={handleWheel}
   />
 </div>
 
@@ -272,14 +323,22 @@
     border-radius: 0.5rem;
     border: 1px solid rgb(63, 63, 70);
     opacity: 0.9;
-    transition: transform 200ms, opacity 200ms;
+    transition:
+      transform 200ms,
+      opacity 200ms;
   }
 
-  .term-container:not(.focused) :global(.xterm) {
+  .term-container:not(.focused) :global(.wterm) {
     cursor: default;
   }
 
   .term-container.focused {
     opacity: 1;
+  }
+
+  .term-container.dragging {
+    opacity: 0.85;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    transition: none;
   }
 </style>

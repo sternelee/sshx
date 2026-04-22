@@ -198,17 +198,25 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                     send(socket, WsServer::Error(e.to_string())).await?;
                     continue;
                 }
-                if let Err(err) = session.move_shell(id, winsize) {
-                    send(socket, WsServer::Error(err.to_string())).await?;
-                    continue;
-                }
-                if let Some(winsize) = winsize {
-                    let msg = ServerMessage::Resize(TerminalSize {
-                        id: id.0,
-                        rows: winsize.rows as u32,
-                        cols: winsize.cols as u32,
-                    });
-                    session.update_tx().send(msg).await?;
+                match session.move_shell(id, winsize) {
+                    Err(err) => {
+                        send(socket, WsServer::Error(err.to_string())).await?;
+                        continue;
+                    }
+                    // Only send a PTY resize when rows/cols actually changed.
+                    // Position-only moves (drag) must not trigger a resize.
+                    Ok(dims_changed) => {
+                        if dims_changed {
+                            if let Some(winsize) = winsize {
+                                let msg = ServerMessage::Resize(TerminalSize {
+                                    id: id.0,
+                                    rows: winsize.rows as u32,
+                                    cols: winsize.cols as u32,
+                                });
+                                session.update_tx().send(msg).await?;
+                            }
+                        }
+                    }
                 }
             }
             WsClient::Data(id, data, offset) => {

@@ -103,6 +103,8 @@
   const writers: Record<number, (data: string) => void> = {};
   const termWrappers: Record<number, HTMLDivElement> = {};
   const termElements: Record<number, HTMLDivElement> = {};
+  const termCharWidths: Record<number, number> = {};
+  const termRowHeights: Record<number, number> = {};
   const chunknums: Record<number, number> = {};
   const locks: Record<number, any> = {};
   let userId = 0;
@@ -117,17 +119,37 @@
   let movingOrigin = [0, 0]; // Coordinates of mouse at origin when drag started.
   let movingSize: WsWinsize; // New [x, y] position of the dragged terminal.
   let movingIsDone = false; // Moving finished but hasn't been acknowledged.
+  let movingPointerId = -1; // Pointer ID for the active drag.
 
   let resizing = -1; // Terminal ID that is being resized.
   let resizingOrigin = [0, 0]; // Coordinates of top-left origin when resize started.
   let resizingCell = [0, 0]; // Pixel dimensions of a single terminal cell.
   let resizingSize: WsWinsize; // Last resize message sent.
+  let resizingPointerId = -1; // Pointer ID for the active resize.
+
+  const TERM_MAX_ROWS = 200;
+  const TERM_MAX_COLS = 400;
 
   let chatMessages: ChatMessage[] = [];
   let newMessages = false;
 
   let serverLatencies: number[] = [];
   let shellLatencies: number[] = [];
+
+  // Track whether we've already shown the initial connection toast.
+  // Avoids spamming "Connected to the server." on every reconnect.
+  let hasShownConnectToast = false;
+
+  // Throttled send functions for move and cursor updates.
+  // Defined at component scope so they can be used by both the global
+  // pointer handlers and inline event handlers in the template.
+  const sendMove = throttle((message: WsClient) => {
+    srocket?.send(message);
+  }, 50);
+
+  const sendCursor = throttle((message: WsClient) => {
+    srocket?.send(message);
+  }, 80);
 
   onMount(async () => {
     // The page hash sets the end-to-end encryption key.
@@ -146,10 +168,13 @@
         if (message.hello) {
           userId = message.hello[0];
           dispatch("receiveName", message.hello[1]);
-          makeToast({
-            kind: "success",
-            message: `Connected to the server.`,
-          });
+          if (!hasShownConnectToast) {
+            hasShownConnectToast = true;
+            makeToast({
+              kind: "success",
+              message: `Connected to the server.`,
+            });
+          }
           exitReason = null;
         } else if (message.invalidAuth) {
           exitReason =
@@ -313,37 +338,27 @@
     if (activeElement instanceof HTMLElement) activeElement.focus();
   });
 
-  // Global mouse handler logic follows, attached to the window element for smoothness.
+  // Global pointer handler logic follows, attached to the window element for smoothness.
+  // These handlers only process events for the resize handle (not terminal title drag,
+  // which is handled inline by XTerm.svelte) and cursor position updates.
   onMount(() => {
-    // 50 milliseconds between successive terminal move updates.
-    const sendMove = throttle((message: WsClient) => {
-      srocket?.send(message);
-    }, 50);
-
-    // 80 milliseconds between successive cursor updates.
-    const sendCursor = throttle((message: WsClient) => {
-      srocket?.send(message);
-    }, 80);
-
-    function handleMouse(event: MouseEvent) {
-      if (moving !== -1 && !movingIsDone) {
-        const [x, y] = normalizePosition(event);
-        movingSize = {
-          ...movingSize,
-          x: Math.round(x - movingOrigin[0]),
-          y: Math.round(y - movingOrigin[1]),
-        };
-        sendMove({ move: [moving, movingSize] });
-      }
-
-      if (resizing !== -1) {
-        const cols = Math.max(
-          Math.floor((event.pageX - resizingOrigin[0]) / resizingCell[0]),
-          TERM_MIN_COLS, // Minimum number of columns.
+    function handlePointer(event: PointerEvent) {
+      // Terminal title drag is handled entirely by XTerm.svelte inline handlers.
+      // Only handle resize events here.
+      if (resizing !== -1 && event.pointerId === resizingPointerId) {
+        const cols = Math.min(
+          Math.max(
+            Math.floor((event.pageX - resizingOrigin[0]) / resizingCell[0]),
+            TERM_MIN_COLS,
+          ),
+          TERM_MAX_COLS,
         );
-        const rows = Math.max(
-          Math.floor((event.pageY - resizingOrigin[1]) / resizingCell[1]),
-          TERM_MIN_ROWS, // Minimum number of rows.
+        const rows = Math.min(
+          Math.max(
+            Math.floor((event.pageY - resizingOrigin[1]) / resizingCell[1]),
+            TERM_MIN_ROWS,
+          ),
+          TERM_MAX_ROWS,
         );
         if (rows !== resizingSize.rows || cols !== resizingSize.cols) {
           resizingSize = { ...resizingSize, rows, cols };
@@ -351,33 +366,35 @@
         }
       }
 
-      sendCursor({ setCursor: normalizePosition(event) });
+      // Update cursor position for all pointer moves
+      if (event.pointerType === "mouse") {
+        sendCursor({ setCursor: normalizePosition(event) });
+      }
     }
 
-    function handleMouseEnd(event: MouseEvent) {
-      if (moving !== -1) {
-        movingIsDone = true;
-        sendMove.cancel();
-        srocket?.send({ move: [moving, movingSize] });
-      }
-
-      if (resizing !== -1) {
+    function handlePointerEnd(event: PointerEvent) {
+      if (resizing !== -1 && event.pointerId === resizingPointerId) {
         resizing = -1;
+        resizingPointerId = -1;
       }
 
-      if (event.type === "mouseleave") {
+      if (event.type === "pointerleave" && event.pointerType === "mouse") {
         sendCursor.cancel();
         srocket?.send({ setCursor: null });
       }
     }
 
-    window.addEventListener("mousemove", handleMouse);
-    window.addEventListener("mouseup", handleMouseEnd);
-    document.body.addEventListener("mouseleave", handleMouseEnd);
+    window.addEventListener("pointermove", handlePointer);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+    document.body.addEventListener("pointerleave", handlePointerEnd);
     return () => {
-      window.removeEventListener("mousemove", handleMouse);
-      window.removeEventListener("mouseup", handleMouseEnd);
-      document.body.removeEventListener("mouseleave", handleMouseEnd);
+      window.removeEventListener("pointermove", handlePointer);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      document.body.removeEventListener("pointerleave", handlePointerEnd);
+      sendMove.cancel();
+      sendCursor.cancel();
     };
   });
 
@@ -422,8 +439,8 @@
           status={connected
             ? "connected"
             : exitReason
-            ? "no-shell"
-            : "no-server"}
+              ? "no-shell"
+              : "no-server"}
           serverLatency={integerMedian(serverLatencies)}
           shellLatency={integerMedian(shellLatencies)}
         />
@@ -500,21 +517,31 @@
           cols={ws.cols}
           bind:write={writers[id]}
           bind:termEl={termElements[id]}
+          on:cellsize={({ detail }) => {
+            termCharWidths[id] = detail.charWidth;
+            termRowHeights[id] = detail.rowHeight;
+          }}
           on:data={({ detail: data }) =>
             hasWriteAccess && handleInput(id, data)}
           on:close={() => srocket?.send({ close: id })}
           on:shrink={() => {
             if (!hasWriteAccess) return;
-            const rows = Math.max(ws.rows - 4, TERM_MIN_ROWS);
-            const cols = Math.max(ws.cols - 10, TERM_MIN_COLS);
+            const rows = Math.max(
+              Math.min(ws.rows - 4, TERM_MAX_ROWS),
+              TERM_MIN_ROWS,
+            );
+            const cols = Math.max(
+              Math.min(ws.cols - 10, TERM_MAX_COLS),
+              TERM_MIN_COLS,
+            );
             if (rows !== ws.rows || cols !== ws.cols) {
               srocket?.send({ move: [id, { ...ws, rows, cols }] });
             }
           }}
           on:expand={() => {
             if (!hasWriteAccess) return;
-            const rows = ws.rows + 4;
-            const cols = ws.cols + 10;
+            const rows = Math.min(ws.rows + 4, TERM_MAX_ROWS);
+            const cols = Math.min(ws.cols + 10, TERM_MAX_COLS);
             srocket?.send({ move: [id, { ...ws, rows, cols }] });
           }}
           on:bringToFront={() => {
@@ -524,11 +551,35 @@
           }}
           on:startMove={({ detail: event }) => {
             if (!hasWriteAccess) return;
-            const [x, y] = normalizePosition(event);
-            moving = id;
-            movingOrigin = [x - ws.x, y - ws.y];
-            movingSize = ws;
-            movingIsDone = false;
+            if (event.type === "pointerdown") {
+              const [x, y] = normalizePosition(event);
+              // Set movingSize BEFORE moving = id, so that if Svelte's reactive
+              // system re-evaluates `ws = id === moving ? movingSize : winsize`
+              // during the `moving = id` assignment, movingSize is already
+              // defined and `ws` will not be undefined.
+              movingSize = ws;
+              moving = id;
+              movingPointerId = event.pointerId;
+              movingOrigin = [x - movingSize.x, y - movingSize.y];
+              movingIsDone = false;
+            } else if (
+              event.type === "pointermove" &&
+              moving === id &&
+              !movingIsDone
+            ) {
+              const [x, y] = normalizePosition(event);
+              movingSize = {
+                ...movingSize,
+                x: Math.round(x - movingOrigin[0]),
+                y: Math.round(y - movingOrigin[1]),
+              };
+              sendMove({ move: [moving, movingSize] });
+            } else if (event.type === "pointerup" && moving === id) {
+              movingIsDone = true;
+              sendMove.cancel();
+              srocket?.send({ move: [moving, movingSize] });
+              movingPointerId = -1;
+            }
           }}
           on:focus={() => {
             if (!hasWriteAccess) return;
@@ -551,17 +602,43 @@
         <!-- Interactable element for resizing -->
         <div
           class="absolute w-5 h-5 -bottom-1 -right-1 cursor-nwse-resize"
-          on:mousedown={(event) => {
-            const canvasEl = termElements[id].querySelector(".xterm-screen");
-            if (canvasEl) {
+          on:pointerdown={(event) => {
+            event.stopPropagation();
+            if (!hasWriteAccess) return;
+            const cw = termCharWidths[id];
+            const rh = termRowHeights[id];
+            if (cw > 0 && rh > 0) {
               resizing = id;
-              const r = canvasEl.getBoundingClientRect();
-              resizingOrigin = [event.pageX - r.width, event.pageY - r.height];
-              resizingCell = [r.width / ws.cols, r.height / ws.rows];
+              resizingPointerId = event.pointerId;
+              (event.currentTarget as HTMLElement).setPointerCapture(
+                event.pointerId,
+              );
+              resizingOrigin = [
+                event.pageX - ws.cols * cw,
+                event.pageY - ws.rows * rh,
+              ];
+              resizingCell = [cw, rh];
               resizingSize = ws;
             }
           }}
-          on:pointerdown={(event) => event.stopPropagation()}
+          on:pointerup={(event) => {
+            if (resizing === id && event.pointerId === resizingPointerId) {
+              resizing = -1;
+              resizingPointerId = -1;
+              (event.currentTarget as HTMLElement).releasePointerCapture(
+                event.pointerId,
+              );
+            }
+          }}
+          on:pointercancel={(event) => {
+            if (resizing === id && event.pointerId === resizingPointerId) {
+              resizing = -1;
+              resizingPointerId = -1;
+              (event.currentTarget as HTMLElement).releasePointerCapture(
+                event.pointerId,
+              );
+            }
+          }}
         />
       </div>
     {/each}

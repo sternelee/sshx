@@ -244,15 +244,21 @@ impl Session {
     }
 
     /// Change the size of a terminal, notifying clients if necessary.
-    pub fn move_shell(&self, id: Sid, winsize: Option<WsWinsize>) -> Result<()> {
+    ///
+    /// Returns `true` if the terminal dimensions (rows/cols) actually changed,
+    /// meaning the PTY should be resized.
+    pub fn move_shell(&self, id: Sid, winsize: Option<WsWinsize>) -> Result<bool> {
         let _guard = self.get_shell_mut(id)?; // Ensures mutual exclusion.
+        let mut dims_changed = false;
         self.source.send_modify(|source| {
             if let Some(idx) = source.iter().position(|&(sid, _)| sid == id) {
                 let (_, oldsize) = source.remove(idx);
-                source.push((id, winsize.unwrap_or(oldsize)));
+                let newsize = winsize.unwrap_or(oldsize);
+                dims_changed = newsize.rows != oldsize.rows || newsize.cols != oldsize.cols;
+                source.push((id, newsize));
             }
         });
-        Ok(())
+        Ok(dims_changed)
     }
 
     /// Receive new data into the session.

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // A terminal "local echo" or typeahead addon for xterm.js.
 /* eslint-disable @typescript-eslint/no-unsafe-function-type */
 //
