@@ -279,31 +279,56 @@
   </p>
 </main>
 
-<style lang="postcss">
+<style>
   b {
-    @apply text-zinc-300 font-medium;
+    color: rgb(212, 212, 212);
+    font-weight: 500;
   }
 
   code.name {
-    @apply text-[0.9em] text-zinc-100 border border-white/25 px-1 py-0.5 rounded;
+    font-size: 0.9em;
+    color: rgb(244, 244, 245);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
   }
 
   hr {
-    @apply mx-auto md:w-1/2 border-zinc-800;
+    margin-left: auto;
+    margin-right: auto;
+    border-color: rgb(31, 31, 31);
+  }
+
+  @media (min-width: 640px) {
+    hr {
+      width: 50%;
+    }
   }
 
   .title-gradient {
-    @apply text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-400 to-blue-500;
+    color: transparent;
+    background-clip: text;
+    background-image: linear-gradient(to right, rgb(232, 121, 249), rgb(59, 130, 246));
   }
 
   .feature-block {
-    @apply relative border rounded-lg border-transparent p-6 sm:p-8;
+    position: relative;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
     background: #111111 padding-box;
+  }
+
+  @media (min-width: 640px) {
+    .feature-block {
+      padding: 2rem;
+    }
   }
 
   .feature-block::before {
     content: "";
-    @apply absolute inset-0;
+    position: absolute;
+    inset: 0;
     z-index: -1;
     margin: -1px;
     border-radius: inherit;
@@ -324,19 +349,48 @@
   }
 
   .feature-block h3 {
-    @apply font-medium mb-2;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
   }
 
   .feature-block p {
-    @apply text-zinc-400;
+    color: rgb(161, 161, 170);
   }
 
   .feature-icon {
-    @apply inline-block p-3 rounded-full mb-3 shadow-md border border-zinc-600;
+    display: inline-block;
+    padding: 0.75rem;
+    border-radius: 9999px;
+    margin-bottom: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgb(86, 86, 86);
   }
 
   .installation-section {
-    @apply grid sm:grid-cols-[200px,1fr] gap-x-10 gap-y-4 max-w-4xl mx-auto sm:border-t sm:border-white/10 sm:py-6 lg:px-2;
-    @apply mb-16 lg:mb-8;
+    display: grid;
+    gap: 1rem;
+    max-width: 64rem;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 4rem;
+  }
+
+  @media (min-width: 640px) {
+    .installation-section {
+      grid-template-columns: 200px 1fr;
+      column-gap: 2.5rem;
+      row-gap: 1rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 1.5rem;
+      padding-bottom: 1.5rem;
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .installation-section {
+      margin-bottom: 2rem;
+    }
   }
 </style>

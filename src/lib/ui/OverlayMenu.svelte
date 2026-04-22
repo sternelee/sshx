@@ -1,12 +1,10 @@
 <script lang="ts">
-  import {
-    Dialog,
-    DialogDescription,
-    DialogOverlay,
-    DialogTitle,
-    Transition,
-    TransitionChild,
-  } from "@rgossiaux/svelte-headlessui";
+  import Dialog from "$lib/ui-headless/Dialog.svelte";
+  import DialogDescription from "$lib/ui-headless/DialogDescription.svelte";
+  import DialogOverlay from "$lib/ui-headless/DialogOverlay.svelte";
+  import DialogTitle from "$lib/ui-headless/DialogTitle.svelte";
+  import Transition from "$lib/ui-headless/Transition.svelte";
+  import TransitionChild from "$lib/ui-headless/TransitionChild.svelte";
   import { XIcon } from "svelte-feather-icons";
   import { createEventDispatcher } from "svelte";
 

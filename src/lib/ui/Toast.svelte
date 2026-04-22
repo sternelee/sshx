@@ -46,10 +46,16 @@
   {/if}
 </div>
 
-<style lang="postcss">
+<style>
   .toast-box {
-    @apply border border-zinc-700 bg-zinc-900/80 backdrop-blur-sm;
-    @apply p-4 rounded-md flex items-start pointer-events-auto;
-    @apply text-sm;
+    border: 1px solid rgb(63 63 70);
+    background: rgba(24, 24, 27, 0.8);
+    backdrop-filter: blur(4px);
+    padding: 1rem;
+    border-radius: 0.375rem;
+    display: flex;
+    align-items: flex-start;
+    pointer-events: auto;
+    font-size: 0.875rem;
   }
 </style>

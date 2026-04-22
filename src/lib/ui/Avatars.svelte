@@ -30,9 +30,20 @@
   {/each}
 </div>
 
-<style lang="postcss">
+<style>
   .avatar {
-    @apply w-7 h-7 rounded-full text-xs font-medium flex justify-center items-center;
-    @apply mr-1 first:mr-0;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-right: 0.25rem;
+  }
+
+  .avatar:first-child {
+    margin-right: 0;
   }
 </style>

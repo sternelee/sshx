@@ -64,17 +64,41 @@
   </div>
 </div>
 
-<style lang="postcss">
+<style>
   .v-divider {
-    @apply h-5 mx-2 border-l-4 border-zinc-800;
+    height: 1.25rem;
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+    border-left: 4px solid rgb(31, 31, 31);
   }
 
   .icon-button {
-    @apply relative rounded-md p-1 hover:bg-zinc-700 active:bg-indigo-700 transition-colors;
-    @apply disabled:opacity-50 disabled:bg-transparent;
+    position: relative;
+    border-radius: 0.375rem;
+    padding: 0.25rem;
+    transition: background-color 200ms;
+  }
+
+  .icon-button:hover {
+    background-color: rgb(63, 63, 63);
+  }
+
+  .icon-button:active {
+    background-color: rgb(55, 48, 194);
+  }
+
+  .icon-button:disabled {
+    opacity: 0.5;
+    background-color: transparent;
   }
 
   .activity {
-    @apply absolute top-1 right-0.5 text-xs p-[4.5px] bg-red-500 rounded-full;
+    position: absolute;
+    top: 0.25rem;
+    right: 0.125rem;
+    font-size: 0.75rem;
+    padding: 2px;
+    background-color: rgb(239, 68, 68);
+    border-radius: 9999px;
   }
 </style>

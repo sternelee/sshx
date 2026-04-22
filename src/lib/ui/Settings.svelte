@@ -106,26 +106,59 @@
   </p>
 </OverlayMenu>
 
-<style lang="postcss">
+<style>
   .item {
-    @apply bg-zinc-800/25 rounded-lg p-4 flex gap-4 flex-col sm:flex-row items-start;
+    background-color: rgba(40, 40, 40, 0.25);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    display: flex;
+    column-gap: 1rem;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  @media (min-width: 640px) {
+    .item {
+      flex-direction: row;
+    }
   }
 
   .item > div:first-child {
-    @apply flex-1;
+    flex: 1;
   }
 
   .item-title {
-    @apply font-medium text-zinc-200 mb-1;
+    font-weight: 500;
+    color: rgb(229, 229, 229);
+    margin-bottom: 0.25rem;
   }
 
   .item-subtitle {
-    @apply text-sm text-zinc-400;
+    font-size: 0.875rem;
+    color: rgb(161, 161, 170);
   }
 
   .input-common {
-    @apply w-52 px-3 py-2 text-sm rounded-md bg-transparent hover:bg-white/5;
-    @apply border border-zinc-700 outline-none focus:ring-2 focus:ring-indigo-500/50;
-    @apply appearance-none transition-colors;
+    width: 13rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    border-radius: 0.375rem;
+    background-color: transparent;
+    border: 1px solid rgb(63 63 70);
+    outline: none;
+    transition: box-shadow 200ms, background-color 200ms;
+  }
+
+  .input-common:focus {
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5);
+  }
+
+  .input-common:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+  }
+
+  .input-common {
+    appearance: none;
+    transition: background-color 200ms, border-color 200ms;
   }
 </style>

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
@@ -10,7 +10,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify("0.4.1-" + commitHash),
   },
 
-  plugins: [sveltekit()],
+  plugins: [tailwindcss(), sveltekit()],
 
   server: {
     proxy: {

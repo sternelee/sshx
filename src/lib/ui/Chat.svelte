@@ -102,26 +102,43 @@
   </form>
 </div>
 
-<style lang="postcss">
+<style>
   .message-group {
-    @apply flex flex-col items-start space-y-0.5 max-w-[75%];
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    row-gap: 0.125rem;
+    max-width: 75%;
   }
 
   .message-group.from-me {
-    @apply ml-auto items-end;
+    margin-left: auto;
+    align-items: flex-end;
   }
 
   .message-group.from-me > aside {
-    @apply hidden;
+    display: none;
   }
 
   .chat {
-    @apply px-2.5 py-1.5 text-sm rounded-2xl max-w-full break-words bg-zinc-800;
-    @apply hover:bg-zinc-700 transition-colors;
+    padding: 0.375rem 0.625rem;
+    font-size: 0.875rem;
+    border-radius: 1rem;
+    max-width: 100%;
+    overflow-wrap: break-word;
+    background-color: rgb(40, 40, 40);
+    transition: background-color 200ms;
+  }
+
+  .chat:hover {
+    background-color: rgb(63, 63, 70);
   }
 
   .message-group.from-me .chat {
-    @apply bg-indigo-700;
-    @apply hover:bg-indigo-600;
+    background-color: rgb(55, 48, 194);
+  }
+
+  .message-group.from-me .chat:hover {
+    background-color: rgb(67, 58, 210);
   }
 </style>

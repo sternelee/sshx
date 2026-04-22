@@ -266,17 +266,20 @@
   />
 </div>
 
-<style lang="postcss">
+<style>
   .term-container {
-    @apply inline-block rounded-lg border border-zinc-700 opacity-90;
+    display: inline-block;
+    border-radius: 0.5rem;
+    border: 1px solid rgb(63, 63, 70);
+    opacity: 0.9;
     transition: transform 200ms, opacity 200ms;
   }
 
   .term-container:not(.focused) :global(.xterm) {
-    @apply cursor-default;
+    cursor: default;
   }
 
   .term-container.focused {
-    @apply opacity-100;
+    opacity: 1;
   }
 </style>

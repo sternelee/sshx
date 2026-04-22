@@ -66,7 +66,7 @@ export class Srocket<T, U> {
     const data = <Uint8Array>(encode(message) as unknown);
 
     if (this.#connected && this.#ws) {
-      this.#ws.send(data);
+      this.#ws.send(data as BufferSource);
     } else {
       if (this.#buffer.length < BUFFER_SIZE) {
         this.#buffer.push(data);
@@ -118,7 +118,7 @@ export class Srocket<T, U> {
         }
         // Send any queued messages.
         for (const message of this.#buffer) {
-          this.#ws.send(message);
+          this.#ws.send(message as BufferSource);
         }
         this.#buffer = [];
       } else {

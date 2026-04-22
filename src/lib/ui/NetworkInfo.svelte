@@ -86,16 +86,21 @@
   </div>
 </div>
 
-<style lang="postcss">
+<style>
   .ball {
-    @apply rounded-full w-4 h-4;
+    border-radius: 9999px;
+    width: 1rem;
+    height: 1rem;
   }
 
   .ball.filled {
-    @apply border border-zinc-300 bg-zinc-600;
+    border: 1px solid rgb(212, 212, 212);
+    background-color: rgb(82, 82, 91);
   }
 
   .ball:not(.filled) {
-    @apply border-2 border-zinc-600;
+    border-width: 2px;
+    border-color: rgb(82, 82, 91);
+    background-color: transparent;
   }
 </style>

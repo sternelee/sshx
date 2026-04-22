@@ -1,4 +1,5 @@
 // A terminal "local echo" or typeahead addon for xterm.js.
+/* eslint-disable @typescript-eslint/no-unsafe-function-type */
 //
 // This is forked from VSCode's typeahead implementation at
 // https://github.com/microsoft/vscode/blob/1.80.1/src/vs/workbench/contrib/terminalContrib/typeAhead/browser/terminalTypeAheadAddon.ts
@@ -1417,7 +1418,10 @@ class TypeAheadStyle implements IDisposable {
   undo!: string;
   private _csiHandler?: IDisposable;
 
-  constructor(value: string, private readonly _terminal: Terminal) {
+  constructor(
+    value: string,
+    private readonly _terminal: Terminal,
+  ) {
     this.onUpdate(value);
   }
 
@@ -1718,12 +1722,15 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
       return;
     }
 
-    this._clearPredictionDebounce = disposableTimeout(() => {
-      this._timeline?.undoAllPredictions();
-      if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
-        this._lastRow.charState = CharPredictState.Unknown;
-      }
-    }, Math.max(500, (this.stats.maxLatency * 3) / 2));
+    this._clearPredictionDebounce = disposableTimeout(
+      () => {
+        this._timeline?.undoAllPredictions();
+        if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
+          this._lastRow.charState = CharPredictState.Unknown;
+        }
+      },
+      Math.max(500, (this.stats.maxLatency * 3) / 2),
+    );
   }
 
   /**
