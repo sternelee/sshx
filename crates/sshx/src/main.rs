@@ -79,14 +79,15 @@ async fn start(args: Args) -> Result<()> {
     };
 
     let name = args.name.unwrap_or_else(|| {
-        let mut name = whoami::username();
-        if let Ok(host) = whoami::fallible::hostname() {
-            // Trim domain information like .lan or .local
-            let host = host.split('.').next().unwrap_or(&host);
-            name += "@";
-            name += host;
+        let username = whoami::username().unwrap_or_else(|_| String::from("unknown"));
+        match whoami::hostname() {
+            Ok(host) => {
+                // Trim domain information like .lan or .local
+                let host = host.split('.').next().unwrap_or(&host);
+                format!("{username}@{host}")
+            }
+            Err(_) => username,
         }
-        name
     });
 
     let runner = Runner::Shell(shell.clone());
@@ -113,6 +114,9 @@ async fn start(args: Args) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    // Install the default crypto provider for rustls (required for rustls 0.23+)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args = Args::parse();
 
     let default_level = if args.quiet { "error" } else { "info" };

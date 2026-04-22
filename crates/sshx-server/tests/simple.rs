@@ -13,7 +13,7 @@ async fn test_rpc() -> Result<()> {
 
     let req = OpenRequest {
         origin: "sshx.io".into(),
-        encrypted_zeros: Encrypt::new("").zeros().into(),
+        encrypted_zeros: Encrypt::new("").zeros(),
         name: String::new(),
         write_password_hash: None,
     };

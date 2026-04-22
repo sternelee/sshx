@@ -20,8 +20,9 @@ pub mod proto {
 
 /// Generate a cryptographically-secure, random alphanumeric value.
 pub fn rand_alphanumeric(len: usize) -> String {
-    use rand::{distributions::Alphanumeric, thread_rng, Rng};
-    thread_rng()
+    use rand::distr::Alphanumeric;
+    use rand::RngExt;
+    rand::rng()
         .sample_iter(Alphanumeric)
         .take(len)
         .map(char::from)

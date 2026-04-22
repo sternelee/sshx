@@ -14,17 +14,19 @@ keywords = ["ssh", "share", "terminal", "collaborative"]
 [workspace.dependencies]
 anyhow = "1.0.62"
 clap = { version = "4.5.17", features = ["derive", "env"] }
-prost = "0.13.4"
-rand = "0.8.5"
+prost = "0.14"
+rand = "0.10"
 serde = { version = "1.0.188", features = ["derive", "rc"] }
 sshx-core = { version = "0.4.1", path = "crates/sshx-core" }
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-stream = { version = "0.1.14", features = ["sync"] }
-tonic = { version = "0.12.3", features = ["tls", "tls-webpki-roots"] }
-tonic-build = "0.12.3"
-tonic-reflection = "0.12.3"
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tonic = { version = "0.14", features = ["tls-webpki-roots"] }
+tonic-prost = "0.14"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
+tonic-reflection = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 strip = true
