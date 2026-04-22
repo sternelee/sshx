@@ -218,7 +218,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 }
                 let input = TerminalInput {
                     id: id.0,
-                    data,
+                    data: data.to_vec(),
                     offset,
                 };
                 update_tx.send(ServerMessage::Input(input)).await?;

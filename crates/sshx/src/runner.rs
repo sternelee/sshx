@@ -114,14 +114,14 @@ async fn shell_task(
         if content_offset + content.len() > seq {
             let start = prev_char_boundary(&content, seq - content_offset);
             let end = prev_char_boundary(&content, (start + CONTENT_CHUNK_SIZE).min(content.len()));
-            let data = encrypt.segment(
+            let segment_data = encrypt.segment(
                 0x100000000 | id.0 as u64, // stream number
                 (content_offset + start) as u64,
                 &content.as_bytes()[start..end],
             );
             let data = TerminalData {
                 id: id.0,
-                data: data.into(),
+                data: segment_data,
                 seq: (content_offset + start) as u64,
             };
             output_tx.send(ClientMessage::Data(data)).await?;
@@ -160,9 +160,7 @@ async fn echo_task(
                 let msg = String::from_utf8_lossy(&data);
                 let term_data = TerminalData {
                     id: id.0,
-                    data: encrypt
-                        .segment(0x100000000 | id.0 as u64, seq, msg.as_bytes())
-                        .into(),
+                    data: encrypt.segment(0x100000000 | id.0 as u64, seq, msg.as_bytes()),
                     seq,
                 };
                 output_tx.send(ClientMessage::Data(term_data)).await?;

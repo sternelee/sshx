@@ -1,35 +1,53 @@
-app = "sshx"
-primary_region = "ewr"
-kill_signal = "SIGINT"
-kill_timeout = 90
+# fly.toml app configuration file generated for sshx-lively-silence-6642 on 2025-10-11T10:57:45+08:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'sshx-lively-silence-6642'
+primary_region = 'ewr'
+kill_signal = 'SIGINT'
+kill_timeout = '1m30s'
 
 [experimental]
+  cmd = ['sh', '-c', './sshx-server --listen :: --host "$FLY_ALLOC_ID.vm.sshx.internal:8051"']
   auto_rollback = true
-  cmd = ["sh", "-c", "./sshx-server --listen :: --host \"$FLY_ALLOC_ID.vm.sshx.internal:8051\""]
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
 [[services]]
-  protocol = "tcp"
+  protocol = 'tcp'
   internal_port = 8051
-  processes = ["app"]
-
-  [services.concurrency]
-    type = "connections"
-    hard_limit = 65536
-    soft_limit = 1024
+  processes = ['app']
 
   [[services.ports]]
     port = 80
-    handlers = ["http"]
+    handlers = ['http']
     force_https = true
 
   [[services.ports]]
     port = 443
-    handlers = ["tls"]
+    handlers = ['tls']
+
     [services.ports.tls_options]
-      alpn = ["h2", "http/1.1"]
+      alpn = ['h2', 'http/1.1']
+
+  [services.concurrency]
+    type = 'connections'
+    hard_limit = 65536
+    soft_limit = 1024
 
   [[services.tcp_checks]]
-    interval = "15s"
-    timeout = "2s"
-    grace_period = "1s"
-    restart_limit = 0
+    interval = '15s'
+    timeout = '2s'
+    grace_period = '1s'
+
+[[vm]]
+  size = 'shared-cpu-1x'

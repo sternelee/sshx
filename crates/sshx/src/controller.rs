@@ -75,14 +75,14 @@ impl Controller {
         let mut client = Self::connect(origin).await?;
         let encrypt = kdf_task.await?;
         let write_password_hash = if let Some(task) = kdf_write_password_task {
-            Some(task.await?.zeros().into())
+            Some(task.await?.zeros())
         } else {
             None
         };
 
         let req = OpenRequest {
             origin: origin.into(),
-            encrypted_zeros: encrypt.zeros().into(),
+            encrypted_zeros: encrypt.zeros(),
             name: name.into(),
             write_password_hash,
         };

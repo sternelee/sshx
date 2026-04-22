@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use dashmap::DashMap;
-use hmac::{Hmac, Mac as _};
+use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use tokio::time;

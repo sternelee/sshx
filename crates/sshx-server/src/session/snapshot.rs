@@ -23,7 +23,7 @@ impl Session {
         let ids = self.counter.get_current_values();
         let winsizes: BTreeMap<Sid, WsWinsize> = self.source.borrow().iter().cloned().collect();
         let message = SerializedSession {
-            encrypted_zeros: self.metadata().encrypted_zeros.clone(),
+            encrypted_zeros: self.metadata().encrypted_zeros.clone().to_vec(),
             shells: self
                 .shells
                 .read()
@@ -47,7 +47,7 @@ impl Session {
                     let winsize = winsizes.get(sid).cloned().unwrap_or_default();
                     let shell = SerializedShell {
                         seqnum: shell.seqnum,
-                        data: shell.data[prefix..].to_vec(),
+                        data: shell.data[prefix..].iter().map(|b| b.to_vec()).collect(),
                         chunk_offset,
                         byte_offset,
                         closed: shell.closed,
@@ -62,7 +62,11 @@ impl Session {
             next_sid: ids.0 .0,
             next_uid: ids.1 .0,
             name: self.metadata().name.clone(),
-            write_password_hash: self.metadata().write_password_hash.clone(),
+            write_password_hash: self
+                .metadata()
+                .write_password_hash
+                .clone()
+                .map(|b| b.to_vec()),
         };
         let data = message.encode_to_vec();
         ensure!(data.len() < MAX_SNAPSHOT_SIZE, "snapshot too large");
@@ -75,9 +79,9 @@ impl Session {
         let message = SerializedSession::decode(&*data)?;
 
         let metadata = Metadata {
-            encrypted_zeros: message.encrypted_zeros,
+            encrypted_zeros: message.encrypted_zeros.into(),
             name: message.name,
-            write_password_hash: message.write_password_hash,
+            write_password_hash: message.write_password_hash.map(|b| b.into()),
         };
 
         let session = Self::new(metadata);
@@ -95,7 +99,7 @@ impl Session {
             ));
             let shell = State {
                 seqnum: shell.seqnum,
-                data: shell.data,
+                data: shell.data.into_iter().map(|v| v.into()).collect(),
                 chunk_offset: shell.chunk_offset,
                 byte_offset: shell.byte_offset,
                 closed: shell.closed,
