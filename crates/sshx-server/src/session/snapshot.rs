@@ -70,7 +70,7 @@ impl Session {
         };
         let data = message.encode_to_vec();
         ensure!(data.len() < MAX_SNAPSHOT_SIZE, "snapshot too large");
-        Ok(zstd::bulk::compress(&data, 15)?)
+        Ok(zstd::bulk::compress(&data, 19)?)
     }
 
     /// Restore the session from a previous compressed snapshot.
