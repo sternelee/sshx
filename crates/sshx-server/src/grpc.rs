@@ -19,11 +19,8 @@ use tracing::{error, info, warn};
 use crate::session::{Metadata, Session};
 use crate::ServerState;
 
-/// Interval for synchronizing sequence numbers with the client.
+/// Interval for synchronizing sequence numbers and measuring latency.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Interval for measuring client latency.
-pub const PING_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Server that handles gRPC requests from the sshx command-line client.
 #[derive(Clone)]
@@ -143,20 +140,14 @@ async fn handle_streaming(
     let mut sync_interval = time::interval(SYNC_INTERVAL);
     sync_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut ping_interval = time::interval(PING_INTERVAL);
-    ping_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
     loop {
         tokio::select! {
-            // Send periodic sync messages to the client.
+            // Send periodic sync + ping messages to the client.
             _ = sync_interval.tick() => {
                 let msg = ServerMessage::Sync(session.sequence_numbers());
                 if !send_msg(tx, msg).await {
                     return Err("failed to send sync message");
                 }
-            }
-            // Send periodic pings to the client.
-            _ = ping_interval.tick() => {
                 send_msg(tx, ServerMessage::Ping(get_time_ms())).await;
             }
             // Send buffered server updates to the client.
