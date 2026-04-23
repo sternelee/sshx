@@ -164,10 +164,10 @@
       : null;
 
     srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
-      onMessage(message) {
-        if (message.hello) {
-          userId = message.hello[0];
-          dispatch("receiveName", message.hello[1]);
+      onMessage(message: WsServer) {
+        if (message.h) {
+          userId = message.h[0];
+          dispatch("receiveName", message.h[1]);
           if (!hasShownConnectToast) {
             hasShownConnectToast = true;
             makeToast({
@@ -176,12 +176,12 @@
             });
           }
           exitReason = null;
-        } else if (message.invalidAuth) {
+        } else if (message.a) {
           exitReason =
             "The URL is not correct, invalid end-to-end encryption key.";
           srocket?.dispose();
-        } else if (message.chunks) {
-          let [id, seqnum, chunks] = message.chunks;
+        } else if (message.c) {
+          let [id, seqnum, chunks] = message.c;
           locks[id](async () => {
             await tick();
             chunknums[id] += chunks.length;
@@ -195,47 +195,47 @@
               writers[id](new TextDecoder().decode(buf));
             }
           });
-        } else if (message.users) {
-          users = message.users;
-        } else if (message.userDiff) {
-          const [id, update] = message.userDiff;
+        } else if (message.u) {
+          users = message.u;
+        } else if (message.d) {
+          const [id, update] = message.d;
           users = users.filter(([uid]) => uid !== id);
           if (update !== null) {
             users = [...users, [id, update]];
           }
-        } else if (message.shells) {
-          shells = message.shells;
+        } else if (message.s) {
+          shells = message.s;
           if (movingIsDone) {
             moving = -1;
           }
-          for (const [id] of message.shells) {
+          for (const [id] of message.s) {
             if (!subscriptions.has(id)) {
               chunknums[id] ??= 0;
               locks[id] ??= createLock();
               subscriptions.add(id);
-              srocket?.send({ subscribe: [id, chunknums[id]] });
+              srocket?.send({ s: [id, chunknums[id]] });
             }
           }
-        } else if (message.hear) {
-          const [uid, name, msg] = message.hear;
+        } else if (message.e) {
+          const [uid, name, msg] = message.e;
           chatMessages.push({ uid, name, msg, sentAt: new Date() });
           chatMessages = chatMessages;
           if (!showChat) newMessages = true;
-        } else if (message.shellLatency !== undefined) {
-          const shellLatency = Number(message.shellLatency);
+        } else if (message.l !== undefined) {
+          const shellLatency = Number(message.l);
           shellLatencies = [...shellLatencies, shellLatency].slice(-10);
-        } else if (message.pong !== undefined) {
-          const serverLatency = Date.now() - Number(message.pong);
+        } else if (message.p !== undefined) {
+          const serverLatency = Date.now() - Number(message.p);
           serverLatencies = [...serverLatencies, serverLatency].slice(-10);
-        } else if (message.error) {
-          console.warn("Server error: " + message.error);
+        } else if (message.x) {
+          console.warn("Server error: " + message.x);
         }
       },
 
       onConnect() {
-        srocket?.send({ authenticate: [encryptedZeros, writeEncryptedZeros] });
+        srocket?.send({ a: [encryptedZeros, writeEncryptedZeros] });
         if ($settings.name) {
-          srocket?.send({ setName: $settings.name });
+          srocket?.send({ n: $settings.name });
         }
         connected = true;
       },
@@ -248,7 +248,7 @@
         shellLatencies = [];
       },
 
-      onClose(event) {
+      onClose(event: CloseEvent) {
         if (event.code === 4404) {
           exitReason = "Failed to connect: " + event.reason;
         } else if (event.code === 4500) {
@@ -264,7 +264,7 @@
   onMount(() => {
     const pingIntervalId = window.setInterval(() => {
       if (srocket?.connected) {
-        srocket.send({ ping: BigInt(Date.now()) });
+        srocket.send({ p: BigInt(Date.now()) });
       }
     }, 2000);
     return () => window.clearInterval(pingIntervalId);
@@ -282,7 +282,7 @@
   }
 
   $: if ($settings.name) {
-    srocket?.send({ setName: $settings.name });
+    srocket?.send({ n: $settings.name });
   }
 
   let counter = 0n;
@@ -309,7 +309,7 @@
       height: termWrappers[id].clientHeight,
     }));
     const { x, y } = arrangeNewTerminal(existing);
-    srocket?.send({ create: [x, y] });
+    srocket?.send({ e: [x, y] });
     touchZoom.moveTo([x, y], INITIAL_ZOOM);
   }
 
@@ -323,7 +323,7 @@
     const offset = counter;
     counter += BigInt(data.length); // Must increment before the `await`.
     const encrypted = await encrypt.segment(0x200000000n, offset, data);
-    srocket?.send({ data: [id, encrypted, offset] });
+    srocket?.send({ d: [id, encrypted, offset] });
   }
 
   // Stupid hack to preserve input focus when terminals are reordered.
@@ -362,13 +362,13 @@
         );
         if (rows !== resizingSize.rows || cols !== resizingSize.cols) {
           resizingSize = { ...resizingSize, rows, cols };
-          srocket?.send({ move: [resizing, resizingSize] });
+          srocket?.send({ m: [resizing, resizingSize] });
         }
       }
 
       // Update cursor position for all pointer moves
       if (event.pointerType === "mouse") {
-        sendCursor({ setCursor: normalizePosition(event) });
+        sendCursor({ c: normalizePosition(event) });
       }
     }
 
@@ -380,7 +380,7 @@
 
       if (event.type === "pointerleave" && event.pointerType === "mouse") {
         sendCursor.cancel();
-        srocket?.send({ setCursor: null });
+        srocket?.send({ c: null });
       }
     }
 
@@ -403,7 +403,7 @@
 
   // Wait a small amount of time, since blur events happen before focus events.
   const setFocus = debounce((focused: number[]) => {
-    srocket?.send({ setFocus: focused[0] ?? null });
+    srocket?.send({ f: focused[0] ?? null });
   }, 20);
 </script>
 
@@ -455,7 +455,7 @@
       <Chat
         {userId}
         messages={chatMessages}
-        on:chat={(event) => srocket?.send({ chat: event.detail })}
+        on:chat={(event) => srocket?.send({ t: event.detail })}
         on:close={() => (showChat = false)}
       />
     </div>
@@ -523,7 +523,7 @@
           }}
           on:data={({ detail: data }) =>
             hasWriteAccess && handleInput(id, data)}
-          on:close={() => srocket?.send({ close: id })}
+          on:close={() => srocket?.send({ x: id })}
           on:shrink={() => {
             if (!hasWriteAccess) return;
             const rows = Math.max(
@@ -535,19 +535,19 @@
               TERM_MIN_COLS,
             );
             if (rows !== ws.rows || cols !== ws.cols) {
-              srocket?.send({ move: [id, { ...ws, rows, cols }] });
+              srocket?.send({ m: [id, { ...ws, rows, cols }] });
             }
           }}
           on:expand={() => {
             if (!hasWriteAccess) return;
             const rows = Math.min(ws.rows + 4, TERM_MAX_ROWS);
             const cols = Math.min(ws.cols + 10, TERM_MAX_COLS);
-            srocket?.send({ move: [id, { ...ws, rows, cols }] });
+            srocket?.send({ m: [id, { ...ws, rows, cols }] });
           }}
           on:bringToFront={() => {
             if (!hasWriteAccess) return;
             showNetworkInfo = false;
-            srocket?.send({ move: [id, null] });
+            srocket?.send({ m: [id, null] });
           }}
           on:startMove={({ detail: event }) => {
             if (!hasWriteAccess) return;
@@ -573,11 +573,11 @@
                 x: Math.round(x - movingOrigin[0]),
                 y: Math.round(y - movingOrigin[1]),
               };
-              sendMove({ move: [moving, movingSize] });
+              sendMove({ m: [moving, movingSize] });
             } else if (event.type === "pointerup" && moving === id) {
               movingIsDone = true;
               sendMove.cancel();
-              srocket?.send({ move: [moving, movingSize] });
+              srocket?.send({ m: [moving, movingSize] });
               movingPointerId = -1;
             }
           }}

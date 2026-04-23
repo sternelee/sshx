@@ -19,29 +19,29 @@ export type WsUser = {
 
 /** Server message type, see the Rust version. */
 export type WsServer = {
-  hello?: [Uid, string];
-  invalidAuth?: [];
-  users?: [Uid, WsUser][];
-  userDiff?: [Uid, WsUser | null];
-  shells?: [Sid, WsWinsize][];
-  chunks?: [Sid, number, Uint8Array[]];
-  hear?: [Uid, string, string];
-  shellLatency?: number | bigint;
-  pong?: number | bigint;
-  error?: string;
+  h?: [Uid, string];
+  a?: [];
+  u?: [Uid, WsUser][];
+  d?: [Uid, WsUser | null];
+  s?: [Sid, WsWinsize][];
+  c?: [Sid, number, Uint8Array[]];
+  e?: [Uid, string, string];
+  l?: number | bigint;
+  p?: number | bigint;
+  x?: string;
 };
 
 /** Client message type, see the Rust version. */
 export type WsClient = {
-  authenticate?: [Uint8Array, Uint8Array | null];
-  setName?: string;
-  setCursor?: [number, number] | null;
-  setFocus?: number | null;
-  create?: [number, number];
-  close?: Sid;
-  move?: [Sid, WsWinsize | null];
-  data?: [Sid, Uint8Array, bigint];
-  subscribe?: [Sid, number];
-  chat?: string;
-  ping?: bigint;
+  a?: [Uint8Array, Uint8Array | null];
+  n?: string;
+  c?: [number, number] | null;
+  f?: number | null;
+  e?: [number, number];
+  x?: Sid;
+  m?: [Sid, WsWinsize | null];
+  d?: [Sid, Uint8Array, bigint];
+  s?: [Sid, number];
+  t?: string;
+  p?: bigint;
 };

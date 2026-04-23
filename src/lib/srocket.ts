@@ -13,7 +13,7 @@ const RECONNECT_DELAY = 500;
 /** Number of messages to queue while disconnected. */
 const BUFFER_SIZE = 64;
 
-export type SrocketOptions<T> = {
+export type SrocketOptions<T, U> = {
   /** Handle a message received from the server. */
   onMessage(message: T): void;
 
@@ -25,19 +25,25 @@ export type SrocketOptions<T> = {
 
   /** Called when an incoming or existing connection is closed. */
   onClose?(event: CloseEvent): void;
+
+  /** Encode an outgoing message before CBOR serialization. */
+  encode?(message: U): unknown;
+
+  /** Decode an incoming message after CBOR deserialization. */
+  decode?(data: unknown): T;
 };
 
 /** A reconnecting WebSocket client for real-time communication. */
 export class Srocket<T, U> {
   #url: string;
-  #options: SrocketOptions<T>;
+  #options: SrocketOptions<T, U>;
 
   #ws: WebSocket | null;
   #connected: boolean;
   #buffer: Uint8Array[];
   #disposed: boolean;
 
-  constructor(url: string, options: SrocketOptions<T>) {
+  constructor(url: string, options: SrocketOptions<T, U>) {
     this.#url = url;
     if (this.#url.startsWith("/")) {
       // Get WebSocket URL relative to the current origin.
@@ -61,9 +67,10 @@ export class Srocket<T, U> {
 
   /** Queue a message to send to the server, with "at-most-once" semantics. */
   send(message: U) {
+    const toEncode = this.#options.encode ? this.#options.encode(message) : message;
     // Types in cbor-x are incorrect here, so cast to fix the error.
     // See: https://github.com/kriszyp/cbor-x/issues/120
-    const data = <Uint8Array>(encode(message) as unknown);
+    const data = <Uint8Array>(encode(toEncode) as unknown);
 
     if (this.#connected && this.#ws) {
       this.#ws.send(data as BufferSource);
@@ -102,7 +109,10 @@ export class Srocket<T, U> {
     };
     this.#ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
-        const message: T = decode(new Uint8Array(event.data));
+        const raw = decode(new Uint8Array(event.data));
+        const message: T = this.#options.decode
+          ? this.#options.decode(raw)
+          : raw;
         this.#options.onMessage(message);
       } else {
         console.warn("unexpected non-buffer message, ignoring");
