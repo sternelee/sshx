@@ -82,7 +82,16 @@
   function handleKeydown(event: KeyboardEvent) {
     if (!focused) return;
     const target = event.target as HTMLElement;
-    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+      // Prevent the browser from stealing focus from wterm's textarea on Escape.
+      // Some browsers blur the focused textarea when Escape is pressed.
+      if (event.key === "Escape") {
+        setTimeout(() => {
+          if (focused) term?.focus();
+        }, 0);
+      }
+      return;
+    }
 
     if (
       (isMac && event.metaKey && !event.ctrlKey && !event.altKey) ||
@@ -331,6 +340,8 @@
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
     on:wheel={handleWheel}
+    on:click={() => term?.focus()}
+    on:mousedown={() => term?.focus()}
   />
 </div>
 
