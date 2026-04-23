@@ -36,6 +36,15 @@ struct Args {
     /// Hostname of this server, if running multiple servers.
     #[clap(long)]
     host: Option<String>,
+
+    /// Use TLS (wss://) for inter-server proxy connections in mesh mode.
+    ///
+    /// Enable this when the mesh network does not provide its own
+    /// confidentiality (e.g., no WireGuard or private VLAN). In Fly.io
+    /// deployments the private network uses WireGuard, so this flag is
+    /// typically not needed there.
+    #[clap(long)]
+    mesh_tls: bool,
 }
 
 #[tokio::main]
@@ -50,6 +59,7 @@ async fn start(args: Args) -> Result<()> {
     options.override_origin = args.override_origin;
     options.redis_url = args.redis_url;
     options.host = args.host;
+    options.mesh_tls = args.mesh_tls;
 
     let server = Server::new(options)?;
 

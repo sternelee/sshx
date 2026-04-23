@@ -37,7 +37,9 @@ pub async fn get_session_ws(
                     }
                 }
                 Ok(Err(Some(host))) => {
-                    if let Err(err) = proxy_redirect(&mut socket, &host, &name).await {
+                    if let Err(err) =
+                        proxy_redirect(&mut socket, &host, &name, state.mesh_scheme()).await
+                    {
                         error!(?err, "failed to proxy websocket");
                         let frame = CloseFrame {
                             code: 4500,
@@ -260,13 +262,23 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
 }
 
 /// Transparently reverse-proxy a WebSocket connection to a different host.
-async fn proxy_redirect(socket: &mut WebSocket, host: &str, name: &str) -> Result<()> {
+///
+/// The `scheme` parameter controls whether the upstream connection uses plain
+/// WebSockets (`"ws"`) or TLS (`"wss"`). Use `"ws"` only when the mesh network
+/// provides its own confidentiality (e.g., WireGuard). Pass `"wss"` for mesh
+/// networks without network-level encryption.
+async fn proxy_redirect(
+    socket: &mut WebSocket,
+    host: &str,
+    name: &str,
+    scheme: &str,
+) -> Result<()> {
     use tokio_tungstenite::{
         connect_async,
         tungstenite::protocol::{CloseFrame as TCloseFrame, Message as TMessage},
     };
 
-    let (mut upstream, _) = connect_async(format!("ws://{host}/api/s/{name}")).await?;
+    let (mut upstream, _) = connect_async(format!("{scheme}://{host}/api/s/{name}")).await?;
     loop {
         // Due to axum having its own WebSocket API types, we need to manually translate
         // between it and tungstenite's message type.
