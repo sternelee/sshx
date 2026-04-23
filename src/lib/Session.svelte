@@ -8,7 +8,7 @@
     createEventDispatcher,
   } from "svelte";
   import { fade } from "svelte/transition";
-  import { debounce, throttle } from "lodash-es";
+  import { debounce, throttle } from "./utils";
 
   import { Encrypt } from "./encrypt";
   import { createLock } from "./lock";
