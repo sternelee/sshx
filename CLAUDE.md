@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development commands
 
-- Requirements: Rust 1.70+, Node 18, npm 9, Docker, `protoc`, and `mprocs`.
+- Requirements: Rust 1.70+, Node 18, npm 9, Docker, and `mprocs`.
 - Start Redis for local development: `docker compose up -d`
 - Run the full local stack: `npm install && mprocs`
   - `mprocs` starts:
@@ -30,7 +30,7 @@ Local ports used by the default dev workflow:
 - Rust server: `8051`
 - Vite dev server: `5173`
 
-`crates/sshx-core/build.rs` compiles `crates/sshx-core/proto/sshx.proto`, so Rust builds/tests need `protoc` available.
+Protobuf sources are pre-generated in `crates/sshx-core/src/generated/`. To regenerate after changing `sshx.proto`, install `protoc` and run with `SSHX_REGENERATE_PROTO=1 cargo build -p sshx-core`.
 
 ## CI expectations
 

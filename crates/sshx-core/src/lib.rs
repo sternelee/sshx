@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 #[allow(missing_docs, non_snake_case)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 pub mod proto {
-    tonic::include_proto!("sshx");
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/sshx.rs"));
 
     /// File descriptor set used for gRPC reflection.
-    pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("sshx");
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated/sshx.bin"));
 }
 
 /// Generate a cryptographically-secure, random alphanumeric value.
