@@ -30,8 +30,8 @@ where
         .into_service()
         .boxed_clone();
 
-    let grpc_routes = TonicRoutes::default()
-        .add_service(SshxServiceServer::new(GrpcServer::new(state)));
+    let grpc_routes =
+        TonicRoutes::default().add_service(SshxServiceServer::new(GrpcServer::new(state)));
 
     #[cfg(feature = "reflection")]
     let grpc_routes = grpc_routes.add_service(

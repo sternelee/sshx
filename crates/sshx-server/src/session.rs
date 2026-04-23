@@ -155,6 +155,20 @@ impl Session {
         WatchStream::new(self.source.subscribe())
     }
 
+    /// Encryption overhead per chunk, derived from zeros length.
+    fn chunk_overhead(&self) -> u64 {
+        match self.metadata.encrypted_zeros.len() {
+            16 => 0,  // v1: AES-128-CTR
+            44 => 28, // v2: AES-256-GCM (12-byte nonce + 16-byte tag)
+            _ => 0,
+        }
+    }
+
+    /// Compute plaintext length from encrypted chunk length.
+    fn plaintext_len(&self, encrypted_len: u64) -> u64 {
+        encrypted_len.saturating_sub(self.chunk_overhead())
+    }
+
     /// Subscribe for chunks from a shell, until it is closed.
     pub fn subscribe_chunks(
         &self,
@@ -178,7 +192,10 @@ impl Session {
                     let current_chunks = shell.chunk_offset + shell.data.len() as u64;
                     if chunknum < current_chunks {
                         let start = chunknum.saturating_sub(shell.chunk_offset) as usize;
-                        seqnum += shell.data[..start].iter().map(|x| x.len() as u64).sum::<u64>();
+                        seqnum += shell.data[..start]
+                            .iter()
+                            .map(|x| self.plaintext_len(x.len() as u64))
+                            .sum::<u64>();
                         chunks = shell.data[start..].to_vec();
                         chunknum = current_chunks;
                     }
@@ -264,12 +281,25 @@ impl Session {
     /// Receive new data into the session.
     pub fn add_data(&self, id: Sid, data: Bytes, seq: u64) -> Result<()> {
         let mut shell = self.get_shell_mut(id)?;
+        let overhead = self.chunk_overhead();
+        let plaintext_len = self.plaintext_len(data.len() as u64);
 
-        if seq <= shell.seqnum && seq + data.len() as u64 > shell.seqnum {
+        if seq <= shell.seqnum && seq + plaintext_len > shell.seqnum {
             let start = shell.seqnum - seq;
-            let segment = data.slice(start as usize..);
+            let (segment, segment_plaintext) = if overhead > 0 {
+                // v2: GCM chunks are atomic blobs; only accept whole chunks.
+                if start > 0 {
+                    return Ok(());
+                }
+                (data, plaintext_len)
+            } else {
+                // v1: CTR mode, can slice by plaintext offset.
+                let seg = data.slice(start as usize..);
+                let seg_len = seg.len() as u64;
+                (seg, seg_len)
+            };
             debug!(%id, bytes = segment.len(), "adding data to shell");
-            shell.seqnum += segment.len() as u64;
+            shell.seqnum += segment_plaintext;
             shell.data.push(segment);
 
             // Prune old chunks if we've exceeded the maximum stored bytes.
@@ -277,7 +307,7 @@ impl Session {
             if stored_bytes > SHELL_STORED_BYTES {
                 let mut offset = 0;
                 while offset < shell.data.len() && stored_bytes > SHELL_STORED_BYTES {
-                    let bytes = shell.data[offset].len() as u64;
+                    let bytes = self.plaintext_len(shell.data[offset].len() as u64);
                     stored_bytes -= bytes;
                     shell.chunk_offset += 1;
                     shell.byte_offset += bytes;

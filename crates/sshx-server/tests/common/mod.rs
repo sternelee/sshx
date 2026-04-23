@@ -132,7 +132,7 @@ impl ClientSocket {
 
     pub async fn send_input(&mut self, id: Sid, data: &[u8]) {
         let offset = 42; // arbitrary, don't reuse the offset in real code though
-        let data = self.encrypt.segment(0x200000000, offset, data);
+        let data = self.encrypt.encrypt(0x200000000, offset, data);
         self.send(WsClient::Data(id, data.into(), offset)).await;
     }
 
@@ -176,11 +176,10 @@ impl ClientSocket {
                         let value = self.data.entry(id).or_default();
                         assert_eq!(seqnum, value.len() as u64);
                         for buf in chunks {
-                            let plaintext = self.encrypt.segment(
-                                0x100000000 | id.0 as u64,
-                                value.len() as u64,
-                                &buf,
-                            );
+                            let plaintext = self
+                                .encrypt
+                                .decrypt(0x100000000 | id.0 as u64, value.len() as u64, &buf)
+                                .unwrap();
                             value.push_str(std::str::from_utf8(&plaintext).unwrap());
                         }
                     }

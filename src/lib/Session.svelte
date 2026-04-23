@@ -156,42 +156,58 @@
     const key = window.location.hash?.slice(1).split(",")[0] ?? "";
     const writePassword = window.location.hash?.slice(1).split(",")[1] ?? null;
 
-    encrypt = await Encrypt.new(key);
-    const encryptedZeros = await encrypt.zeros();
+    let v2Tried = false;
 
-    const writeEncryptedZeros = writePassword
-      ? await (await Encrypt.new(writePassword)).zeros()
-      : null;
+    async function tryConnect(useV1: boolean) {
+      encrypt = useV1
+        ? await Encrypt.new_v1(key)
+        : await Encrypt.new(key);
+      const encryptedZeros = await encrypt.zeros();
 
-    srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
-      onMessage(message: WsServer) {
-        if (message.h) {
-          userId = message.h[0];
-          dispatch("receiveName", message.h[1]);
-          if (!hasShownConnectToast) {
-            hasShownConnectToast = true;
-            makeToast({
-              kind: "success",
-              message: `Connected to the server.`,
-            });
-          }
-          exitReason = null;
-        } else if (message.a) {
-          exitReason =
-            "The URL is not correct, invalid end-to-end encryption key.";
-          srocket?.dispose();
-        } else if (message.c) {
+      const writeEncrypt = writePassword
+        ? useV1
+          ? await Encrypt.new_v1(writePassword)
+          : await Encrypt.new(writePassword)
+        : null;
+      const writeEncryptedZeros = writeEncrypt
+        ? await writeEncrypt.zeros()
+        : null;
+
+      srocket = new Srocket<WsServer, WsClient>(`/api/s/${id}`, {
+        onMessage(message: WsServer) {
+          if (message.h) {
+            userId = message.h[0];
+            dispatch("receiveName", message.h[1]);
+            if (!hasShownConnectToast) {
+              hasShownConnectToast = true;
+              makeToast({
+                kind: "success",
+                message: `Connected to the server.`,
+              });
+            }
+            exitReason = null;
+          } else if (message.a) {
+            if (!v2Tried && !useV1) {
+              v2Tried = true;
+              srocket?.dispose();
+              tryConnect(true);
+              return;
+            }
+            exitReason =
+              "The URL is not correct, invalid end-to-end encryption key.";
+            srocket?.dispose();
+          } else if (message.c) {
           let [id, seqnum, chunks] = message.c;
           locks[id](async () => {
             await tick();
             chunknums[id] += chunks.length;
             for (const data of chunks) {
-              const buf = await encrypt.segment(
+              const buf = await encrypt.decrypt(
                 0x100000000n | BigInt(id),
                 BigInt(seqnum),
                 data,
               );
-              seqnum += data.length;
+              seqnum += buf.length;
               writers[id](new TextDecoder().decode(buf));
             }
           });
@@ -256,6 +272,9 @@
         }
       },
     });
+    }
+
+    tryConnect(false);
   });
 
   onDestroy(() => srocket?.dispose());
@@ -322,7 +341,7 @@
     }
     const offset = counter;
     counter += BigInt(data.length); // Must increment before the `await`.
-    const encrypted = await encrypt.segment(0x200000000n, offset, data);
+    const encrypted = await encrypt.encrypt(0x200000000n, offset, data);
     srocket?.send({ d: [id, encrypted, offset] });
   }
 

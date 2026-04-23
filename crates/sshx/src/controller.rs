@@ -196,7 +196,10 @@ impl Controller {
 
             match message {
                 ServerMessage::Input(input) => {
-                    let data = self.encrypt.segment(0x200000000, input.offset, &input.data);
+                    let data = self
+                        .encrypt
+                        .decrypt(0x200000000, input.offset, &input.data)
+                        .expect("failed to decrypt input");
                     if let Some(sender) = self.shells_tx.get(&Sid(input.id)) {
                         // This line applies backpressure if the shell task is overloaded.
                         sender.send(ShellData::Data(data)).await.ok();

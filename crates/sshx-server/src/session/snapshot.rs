@@ -38,7 +38,7 @@ impl Session {
                         if shell.seqnum - byte_offset > SHELL_SNAPSHOT_BYTES {
                             prefix += 1;
                             chunk_offset += 1;
-                            byte_offset += shell.data[i].len() as u64;
+                            byte_offset += self.plaintext_len(shell.data[i].len() as u64);
                         } else {
                             break;
                         }

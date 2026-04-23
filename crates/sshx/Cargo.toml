@@ -11,6 +11,7 @@ edition = "2021"
 
 [dependencies]
 aes = "0.9"
+aes-gcm = "0.11.0-rc.3"
 ansi_term = "0.12"
 anyhow.workspace = true
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
@@ -20,6 +21,7 @@ clap.workspace = true
 ctr = "0.10"
 encoding_rs = "0.8"
 pin-project = "1.1"
+rand.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 sshx-core.workspace = true
 tokio.workspace = true
