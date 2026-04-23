@@ -95,7 +95,7 @@ impl Controller {
             None
         };
 
-        let (output_tx, output_rx) = mpsc::channel(64);
+        let (output_tx, output_rx) = mpsc::channel(256);
         Ok(Self {
             origin: origin.into(),
             runner,
@@ -160,7 +160,7 @@ impl Controller {
 
     /// Helper function used by `run()` that can return errors.
     async fn try_channel(&mut self) -> Result<()> {
-        let (tx, rx) = mpsc::channel(16);
+        let (tx, rx) = mpsc::channel(256);
 
         let hello = ClientMessage::Hello(format!("{},{}", self.name, self.token));
         send_msg(&tx, hello).await?;
@@ -247,7 +247,7 @@ impl Controller {
 
     /// Entry point to start a new terminal task on the client.
     fn spawn_shell_task(&mut self, id: Sid, center: (i32, i32)) {
-        let (shell_tx, shell_rx) = mpsc::channel(16);
+        let (shell_tx, shell_rx) = mpsc::channel(256);
         let opt = self.shells_tx.insert(id, shell_tx);
         debug_assert!(opt.is_none(), "shell ID cannot be in existing tasks");
 

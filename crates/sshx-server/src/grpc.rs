@@ -99,7 +99,7 @@ impl SshxService for GrpcServer {
         // We now spawn an asynchronous task that sends updates to the client. Note that
         // when this task finishes, the sender end is dropped, so the receiver is
         // automatically closed.
-        let (tx, rx) = mpsc::channel(16);
+        let (tx, rx) = mpsc::channel(256);
         tokio::spawn(async move {
             if let Err(err) = handle_streaming(&tx, &session, stream).await {
                 warn!(?err, "connection exiting early due to an error");

@@ -113,7 +113,7 @@ impl Session {
             counter: IdCounter::default(),
             last_accessed: Mutex::new(now),
             source: watch::channel(Vec::new()).0,
-            broadcast: broadcast::channel(64).0,
+            broadcast: broadcast::channel(256).0,
             update_tx,
             update_rx,
             sync_notify: Notify::new(),

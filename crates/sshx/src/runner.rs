@@ -68,7 +68,7 @@ async fn shell_task(
     let mut decoder = UTF_8.new_decoder(); // UTF-8 streaming decoder
     let mut seq = 0; // our log of the server's sequence number
     let mut seq_outdated = 0; // number of times seq has been outdated
-    let mut buf = [0u8; 4096]; // buffer for reading
+    let mut buf = [0u8; 65536]; // buffer for reading
     let mut finished = false; // set when this is done
 
     while !finished {
