@@ -11,7 +11,7 @@ use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use tokio::time;
 use tokio_stream::StreamExt;
-use tracing::error;
+use tracing::{error, warn};
 
 use self::mesh::StorageMesh;
 use crate::session::Session;
@@ -39,6 +39,9 @@ pub struct ServerState {
 
     /// Storage and distributed communication provider, if enabled.
     mesh: Option<StorageMesh>,
+
+    /// Whether to use TLS (`wss://`) for inter-server proxy connections.
+    mesh_tls: bool,
 }
 
 impl ServerState {
@@ -54,6 +57,7 @@ impl ServerState {
             override_origin: options.override_origin,
             store: DashMap::new(),
             mesh,
+            mesh_tls: options.mesh_tls,
         })
     }
 
@@ -65,6 +69,17 @@ impl ServerState {
     /// Returns the override origin for the Open() RPC.
     pub fn override_origin(&self) -> Option<String> {
         self.override_origin.clone()
+    }
+
+    /// Returns the WebSocket scheme to use for inter-server proxy connections.
+    ///
+    /// Returns `"wss"` when `--mesh-tls` is set, otherwise `"ws"`.
+    pub fn mesh_scheme(&self) -> &'static str {
+        if self.mesh_tls {
+            "wss"
+        } else {
+            "ws"
+        }
     }
 
     /// Lookup a local session by name.
@@ -83,6 +98,11 @@ impl ServerState {
             });
         }
         if let Some(prev_session) = self.store.insert(name.to_string(), session) {
+            warn!(
+                name,
+                "replacing an existing in-memory session on concurrent reconnect; the previous \
+                 session will be shut down"
+            );
             prev_session.shutdown();
         }
     }

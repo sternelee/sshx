@@ -44,6 +44,15 @@ pub struct ServerOptions {
 
     /// Hostname of this server, if running multiple servers.
     pub host: Option<String>,
+
+    /// Use TLS (`wss://`) for inter-server proxy connections in mesh mode.
+    ///
+    /// When running a mesh of sshx servers without network-level encryption
+    /// (e.g., without WireGuard or a private VLAN), enabling this flag ensures
+    /// that WebSocket traffic forwarded between nodes is encrypted. Leave this
+    /// disabled only when the mesh network itself provides confidentiality (for
+    /// example, Fly.io's WireGuard-based private networking).
+    pub mesh_tls: bool,
 }
 
 /// Stateful object that manages the sshx server, with graceful termination.
