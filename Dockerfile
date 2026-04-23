@@ -7,7 +7,7 @@ RUN npm run build
 
 FROM rust:alpine AS backend
 WORKDIR /home/rust/src
-RUN apk --no-cache add musl-dev openssl-dev protoc
+RUN apk --no-cache add musl-dev openssl-dev
 RUN rustup component add rustfmt
 COPY . .
 COPY --from=frontend /usr/src/app/build build
