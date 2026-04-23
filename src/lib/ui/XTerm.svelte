@@ -75,6 +75,7 @@
   let loaded = false;
   let focused = false;
   let currentTitle = "Remote Terminal";
+  let _focusCleanup: (() => void) | null = null;
   const utf8 = new TextEncoder();
 
   // Keyboard shortcuts for natural text editing.
@@ -228,29 +229,42 @@
     // Apply CSS variables for theme without overwriting inline styles
     applyTheme(termEl, theme);
 
-    await term.init();
+    try {
+      await term.init();
+    } catch (err) {
+      console.error("[XTerm] wterm init failed:", err);
+      return;
+    }
 
     measureCharSize();
     updateSize(cols, rows);
     dispatch("cellsize", { charWidth, rowHeight });
 
-    // Handle focus/blur via click on terminal element
-    termEl.addEventListener("click", () => {
+    // Track real focus state using focusin/focusout, which bubble from the
+    // wterm hidden textarea inside termEl. This is more accurate than
+    // window.blur because it fires correctly when focus moves between terminals.
+    // wterm's own _onClickFocus handles click-to-focus; we just sync our state.
+    const handleFocusIn = () => {
       if (!focused) {
         focused = true;
-        term?.focus();
         dispatch("focus");
       }
-    });
-
-    // Global blur detection
-    const handleBlur = () => {
-      if (focused) {
-        focused = false;
-        dispatch("blur");
+    };
+    const handleFocusOut = (event: FocusEvent) => {
+      // Only blur if focus truly left this terminal (not just moved within it).
+      if (!termEl.contains(event.relatedTarget as Node)) {
+        if (focused) {
+          focused = false;
+          dispatch("blur");
+        }
       }
     };
-    window.addEventListener("blur", handleBlur);
+    termEl.addEventListener("focusin", handleFocusIn);
+    termEl.addEventListener("focusout", handleFocusOut);
+    _focusCleanup = () => {
+      termEl.removeEventListener("focusin", handleFocusIn);
+      termEl.removeEventListener("focusout", handleFocusOut);
+    };
 
     loaded = true;
     for (const data of preloadBuffer) {
@@ -259,6 +273,7 @@
   });
 
   onDestroy(() => {
+    _focusCleanup?.();
     term?.destroy();
   });
 </script>
