@@ -75,7 +75,7 @@ jobs:
     name: Deploy
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [rustfmt, rust, web]
+    needs: [rustfmt, rust, windows_test, web]
     concurrency:
       group: deploy
       cancel-in-progress: true
