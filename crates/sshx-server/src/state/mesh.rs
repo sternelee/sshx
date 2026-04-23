@@ -3,8 +3,9 @@
 use std::{pin::pin, sync::Arc, time::Duration};
 
 use anyhow::Result;
+use dashmap::DashMap;
 use redis::AsyncCommands;
-use tokio::time;
+use tokio::time::{self, Instant};
 use tokio_stream::{Stream, StreamExt};
 use tracing::error;
 
@@ -15,6 +16,9 @@ const STORAGE_SYNC_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Length of time a key lasts in Redis before it is expired.
 const STORAGE_EXPIRY: Duration = Duration::from_secs(300);
+
+/// TTL for cached ownership lookups to reduce Redis round-trips.
+const OWNERSHIP_CACHE_TTL: Duration = Duration::from_secs(2);
 
 fn set_opts() -> redis::SetOptions {
     redis::SetOptions::default()
@@ -34,6 +38,8 @@ pub struct StorageMesh {
     redis: deadpool_redis::Pool,
     redis_pubsub: redis::Client,
     host: Option<String>,
+    /// Local cache of session ownership to avoid repeated Redis lookups.
+    ownership_cache: Arc<DashMap<String, (Option<String>, Instant)>>,
 }
 
 impl StorageMesh {
@@ -59,6 +65,7 @@ impl StorageMesh {
             redis,
             redis_pubsub,
             host: host.map(|s| s.to_string()),
+            ownership_cache: Arc::new(DashMap::new()),
         })
     }
 
@@ -69,17 +76,24 @@ impl StorageMesh {
 
     /// Retrieve the hostname of the owner of a session.
     pub async fn get_owner(&self, name: &str) -> Result<Option<String>> {
+        let now = Instant::now();
+        if let Some(entry) = self.ownership_cache.get(name) {
+            let (owner, cached_at) = entry.value();
+            if now.duration_since(*cached_at) < OWNERSHIP_CACHE_TTL {
+                return Ok(owner.clone());
+            }
+        }
+
         let mut conn = self.redis.get().await?;
-        let (owner, closed) = redis::pipe()
+        let (owner, closed): (Option<String>, bool) = redis::pipe()
             .get(format!("session:{{{name}}}:owner"))
             .get(format!("session:{{{name}}}:closed"))
             .query_async(&mut conn)
             .await?;
-        if closed {
-            Ok(None)
-        } else {
-            Ok(owner)
-        }
+        let result = if closed { None } else { owner.clone() };
+        self.ownership_cache
+            .insert(name.to_string(), (result.clone(), now));
+        Ok(result)
     }
 
     /// Retrieve the owner and snapshot of a session.
@@ -148,6 +162,7 @@ impl StorageMesh {
             .ignore()
             .query_async(&mut conn)
             .await?;
+        self.ownership_cache.remove(name);
         if let Some(owner) = owner {
             self.notify_transfer(name, &owner).await?;
         }
