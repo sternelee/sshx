@@ -110,12 +110,56 @@ frontend in parallel on your machine.
 
 ## Deployment
 
-I host the application servers on [Fly.io](https://fly.io/) and with
-[Redis Cloud](https://redis.com/).
+### Fly.io
 
-Self-hosted deployments are not supported at the moment. If you want to deploy
-sshx, you'll need to properly implement HTTP/TCP reverse proxies, gRPC
-forwarding, TLS termination, private mesh networking, and graceful shutdown.
+You can self-host `sshx-server` on [Fly.io](https://fly.io/) with the
+included `Dockerfile` and `fly.toml`.
 
-Please do not run the development commands in a public setting, as this is
-insecure.
+**Prerequisites:** [flyctl](https://fly.io/docs/hands-on/install-flyctl/) installed and authenticated.
+
+1. Create a new Fly app (choose a globally unique name):
+
+   ```shell
+   fly apps create <your-app-name>
+   ```
+
+2. Update `fly.toml` with your app name and preferred region (e.g. `sin` for
+   Singapore, `nrt` for Tokyo, `ewr` for New York):
+
+   ```toml
+   app = '<your-app-name>'
+   primary_region = 'sin'
+   ```
+
+3. Allocate a dedicated IPv4 and IPv6 address (required for DNS to resolve):
+
+   ```shell
+   fly ips allocate-v4 --yes
+   fly ips allocate-v6
+   ```
+
+4. Deploy:
+
+   ```shell
+   fly deploy
+   ```
+
+5. Connect using your self-hosted server:
+
+   ```shell
+   sshx --server https://<your-app-name>.fly.dev
+   ```
+
+**Notes:**
+
+- The server runs as a single machine by default. If you scale to multiple
+  machines, you must add a shared Redis instance (`SSHX_REDIS_URL` env var)
+  so all machines share session state:
+
+  ```shell
+  fly redis create
+  fly secrets set SSHX_REDIS_URL=<redis-url>
+  ```
+
+- `fly deploy` uses Depot to build the image remotely (Rust + Node multi-stage
+  build). The first build may take several minutes.

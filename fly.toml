@@ -1,26 +1,9 @@
-# fly.toml app configuration file generated for sshx-lively-silence-6642 on 2025-10-11T10:57:45+08:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'sshx-lively-silence-6642'
-primary_region = 'ewr'
+app = 'sshx-server-sternelee'
+primary_region = 'sin'
 kill_signal = 'SIGINT'
 kill_timeout = '1m30s'
 
-[experimental]
-  cmd = ['sh', '-c', './sshx-server --listen :: --host "$FLY_ALLOC_ID.vm.sshx.internal:8051"']
-  auto_rollback = true
-
 [build]
-
-[http_service]
-  internal_port = 3000
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
 
 [[services]]
   protocol = 'tcp'
@@ -34,7 +17,7 @@ kill_timeout = '1m30s'
 
   [[services.ports]]
     port = 443
-    handlers = ['tls']
+    handlers = ['tls', 'http']
 
     [services.ports.tls_options]
       alpn = ['h2', 'http/1.1']
