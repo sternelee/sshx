@@ -137,6 +137,7 @@
     if (!term) {
       preloadBuffer.push(data);
     } else {
+      console.log("[XTerm] Writing to terminal:", data);
       term.write(data);
     }
   };
@@ -268,6 +269,7 @@
 
     loaded = true;
     for (const data of preloadBuffer) {
+      console.log("[XTerm] Flushing preload buffer:", data);
       term.write(data);
     }
   });
