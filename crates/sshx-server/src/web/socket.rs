@@ -136,7 +136,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     send(socket, WsServer::Users(session.list_users())).await?;
 
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
-    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u64, Vec<Bytes>)>(1);
+    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u64, Vec<Bytes>)>(16);
 
     let mut shells_stream = session.subscribe_shells();
     loop {
