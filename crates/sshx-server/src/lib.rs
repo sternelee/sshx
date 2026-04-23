@@ -29,6 +29,9 @@ pub mod state;
 pub mod utils;
 pub mod web;
 
+#[cfg(feature = "embedded")]
+mod embed;
+
 /// Options when constructing the application server.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
