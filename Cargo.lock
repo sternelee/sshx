@@ -2068,6 +2068,7 @@ dependencies = [
  "ansi_term",
  "anyhow",
  "argon2",
+ "bytes",
  "cfg-if",
  "clap",
  "close_fds",

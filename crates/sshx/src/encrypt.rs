@@ -40,20 +40,28 @@ impl Encrypt {
         zeros.to_vec()
     }
 
-    /// Encrypt a segment of data from a stream.
+    /// Encrypt a segment of data from a stream in place.
     ///
     /// Note that in CTR mode, the encryption operation is the same as the
     /// decryption operation.
-    pub fn segment(&self, stream_num: u64, offset: u64, data: &[u8]) -> Vec<u8> {
+    pub fn segment_in_place(&self, stream_num: u64, offset: u64, buf: &mut [u8]) {
         assert_ne!(stream_num, 0, "stream number must be nonzero"); // security check
 
         let mut iv = [0; 16];
         iv[0..8].copy_from_slice(&stream_num.to_be_bytes());
 
         let mut cipher = Aes128Ctr64BE::new(&self.aes_key.into(), &iv.into());
-        let mut buf = data.to_vec();
         cipher.seek(offset);
-        cipher.apply_keystream(&mut buf);
+        cipher.apply_keystream(buf);
+    }
+
+    /// Encrypt a segment of data from a stream.
+    ///
+    /// Note that in CTR mode, the encryption operation is the same as the
+    /// decryption operation.
+    pub fn segment(&self, stream_num: u64, offset: u64, data: &[u8]) -> Vec<u8> {
+        let mut buf = data.to_vec();
+        self.segment_in_place(stream_num, offset, &mut buf);
         buf
     }
 }
