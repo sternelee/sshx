@@ -155,6 +155,7 @@ async fn handle_streaming(
                 if !send_msg(tx, msg).await {
                     return Err("failed to send update message");
                 }
+                sync_interval.reset();
             }
             // Handle incoming client messages.
             maybe_update = stream.next() => {

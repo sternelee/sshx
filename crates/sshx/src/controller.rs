@@ -181,6 +181,7 @@ impl Controller {
                 msg = self.output_rx.recv() => {
                     let msg = msg.context("unreachable: output_tx was closed?")?;
                     send_msg(&tx, msg).await?;
+                    interval.reset();
                     continue;
                 }
                 item = messages.next() => {
