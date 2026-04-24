@@ -56,12 +56,17 @@
     focus: void;
     blur: void;
     cellsize: { charWidth: number; rowHeight: number };
+    title: string;
   }>();
 
   export let rows: number, cols: number;
   export let write: (data: string) => void; // bound function prop
 
   export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
+  /** When false, hides the title bar (used by TabbedTerminal). */
+  export let showTitleBar: boolean = true;
+  /** When false, hides this terminal (display:none) — used in tab mode. */
+  export let visible: boolean = true;
   let term: WTerm | null = null;
   export let charWidth = 0;
   export let rowHeight = 0;
@@ -233,6 +238,7 @@
       },
       onTitle: (title: string) => {
         currentTitle = title;
+        dispatch("title", title);
       },
     });
 
@@ -296,11 +302,13 @@
   class:focused
   class:dragging={isDragging}
   style:background={theme.background}
+  style:display={visible ? undefined : "none"}
   on:mousedown={() => {
     if (!isDragging) dispatch("bringToFront");
   }}
   on:pointerdown={(event) => event.stopPropagation()}
 >
+  {#if showTitleBar}
   <div
     class="flex select-none"
     on:pointerdown={handleTitlePointerDown}
@@ -335,6 +343,7 @@
     </div>
     <div class="flex-1" />
   </div>
+  {/if}
   <div
     class="block transition-opacity duration-500"
     bind:this={termEl}

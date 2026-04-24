@@ -22,6 +22,7 @@
   import Settings from "./ui/Settings.svelte";
   import Toolbar from "./ui/Toolbar.svelte";
   import XTerm from "./ui/XTerm.svelte";
+  import TabbedTerminal from "./ui/TabbedTerminal.svelte";
   import Avatars from "./ui/Avatars.svelte";
   import LiveCursor from "./ui/LiveCursor.svelte";
   import { slide } from "./action/slide";
@@ -111,6 +112,29 @@
   let users: [number, WsUser][] = [];
   let shells: [number, WsWinsize][] = [];
   let subscriptions = new Set<number>();
+
+  // Layout mode — persisted to localStorage
+  let layoutMode: "canvas" | "tabs" =
+    typeof localStorage !== "undefined" &&
+    localStorage.getItem("sshx-layout") === "tabs"
+      ? "tabs"
+      : "canvas";
+
+  let activeTabId = -1;
+  let tabGroupX = 0;
+  let tabGroupY = 0;
+  let tabGroupCols = 220;
+  let tabGroupRows = 50;
+
+  // Ensure activeTabId stays valid when shells change in tab mode
+  $: if (layoutMode === "tabs" && shells.length > 0) {
+    if (!shells.find(([id]) => id === activeTabId)) {
+      activeTabId = shells[shells.length - 1][0];
+    }
+  }
+  $: if (layoutMode === "tabs" && shells.length === 0) {
+    activeTabId = -1;
+  }
 
   // May be undefined before `users` is first populated.
   $: hasWriteAccess = users.find(([uid]) => uid === userId)?.[1]?.canWrite;
@@ -321,15 +345,64 @@
       });
       return;
     }
-    const existing = shells.map(([id, winsize]) => ({
-      x: winsize.x,
-      y: winsize.y,
-      width: termWrappers[id].clientWidth,
-      height: termWrappers[id].clientHeight,
-    }));
-    const { x, y } = arrangeNewTerminal(existing);
-    srocket?.send({ e: [x, y] });
-    touchZoom.moveTo([x, y], INITIAL_ZOOM);
+
+    if (layoutMode === "tabs") {
+      // In tab mode, position is irrelevant — use the group's current position
+      srocket?.send({ e: [tabGroupX, tabGroupY] });
+    } else {
+      const existing = shells.map(([id, winsize]) => ({
+        x: winsize.x,
+        y: winsize.y,
+        width: termWrappers[id]?.clientWidth ?? 752,
+        height: termWrappers[id]?.clientHeight ?? 515,
+      }));
+      const { x, y } = arrangeNewTerminal(existing);
+      srocket?.send({ e: [x, y] });
+      touchZoom.moveTo([x, y], INITIAL_ZOOM);
+    }
+  }
+
+  function handleLayoutChange(mode: "canvas" | "tabs") {
+    if (mode === layoutMode) return;
+    layoutMode = mode;
+    localStorage.setItem("sshx-layout", mode);
+    if (mode === "tabs" && shells.length > 0) {
+      const [, firstWinsize] = shells[0];
+      tabGroupX = firstWinsize.x;
+      tabGroupY = firstWinsize.y;
+      tabGroupCols = firstWinsize.cols;
+      tabGroupRows = firstWinsize.rows;
+      activeTabId = shells[shells.length - 1][0];
+    }
+  }
+
+  function handleTabMove(event: CustomEvent<{ x: number; y: number }>) {
+    tabGroupX = event.detail.x;
+    tabGroupY = event.detail.y;
+  }
+
+  function handleTabResize(
+    event: CustomEvent<{ cols: number; rows: number }>,
+  ) {
+    tabGroupCols = event.detail.cols;
+    tabGroupRows = event.detail.rows;
+    // Sync all shells to the new size so PTYs resize properly
+    for (const [id, ws] of shells) {
+      srocket?.send({ m: [id, { ...ws, rows: event.detail.rows, cols: event.detail.cols }] });
+    }
+  }
+
+  function handleTabData(event: CustomEvent<{ id: number; data: Uint8Array }>) {
+    if (hasWriteAccess) handleInput(event.detail.id, event.detail.data);
+  }
+
+  function handleTabFocus(event: CustomEvent<{ id: number }>) {
+    if (!hasWriteAccess) return;
+    focused = [...focused, event.detail.id];
+  }
+
+  function handleTabBlur(event: CustomEvent<{ id: number }>) {
+    focused = focused.filter((i) => i !== event.detail.id);
   }
 
   async function handleInput(id: number, data: Uint8Array) {
@@ -439,6 +512,7 @@
       {connected}
       {newMessages}
       {hasWriteAccess}
+      {layoutMode}
       on:create={handleCreate}
       on:chat={() => {
         showChat = !showChat;
@@ -450,6 +524,7 @@
       on:networkInfo={() => {
         showNetworkInfo = !showNetworkInfo;
       }}
+      on:layoutChange={({ detail }) => handleLayoutChange(detail)}
     />
 
     {#if showNetworkInfo}
@@ -520,147 +595,175 @@
   </div>
 
   <div class="absolute inset-0 overflow-hidden touch-none" bind:this={fabricEl}>
-    {#each shells as [id, winsize] (id)}
-      {@const ws = id === moving ? movingSize : winsize}
-      <div
-        class="absolute"
-        style:left={OFFSET_LEFT_CSS}
-        style:top={OFFSET_TOP_CSS}
-        style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
-        transition:fade|local
-        use:slide={{ x: ws.x, y: ws.y, center, zoom, immediate: id === moving }}
-        bind:this={termWrappers[id]}
-      >
-        <XTerm
-          rows={ws.rows}
-          cols={ws.cols}
-          bind:write={writers[id]}
-          bind:termEl={termElements[id]}
-          on:cellsize={({ detail }) => {
-            termCharWidths[id] = detail.charWidth;
-            termRowHeights[id] = detail.rowHeight;
-          }}
-          on:data={({ detail: data }) =>
-            hasWriteAccess && handleInput(id, data)}
-          on:close={() => srocket?.send({ x: id })}
-          on:shrink={() => {
-            if (!hasWriteAccess) return;
-            const rows = Math.max(
-              Math.min(ws.rows - 4, TERM_MAX_ROWS),
-              TERM_MIN_ROWS,
-            );
-            const cols = Math.max(
-              Math.min(ws.cols - 10, TERM_MAX_COLS),
-              TERM_MIN_COLS,
-            );
-            if (rows !== ws.rows || cols !== ws.cols) {
+    {#if layoutMode === "canvas"}
+      {#each shells as [id, winsize] (id)}
+        {@const ws = id === moving ? movingSize : winsize}
+        <div
+          class="absolute"
+          style:left={OFFSET_LEFT_CSS}
+          style:top={OFFSET_TOP_CSS}
+          style:transform-origin={OFFSET_TRANSFORM_ORIGIN_CSS}
+          transition:fade|local
+          use:slide={{ x: ws.x, y: ws.y, center, zoom, immediate: id === moving }}
+          bind:this={termWrappers[id]}
+        >
+          <XTerm
+            rows={ws.rows}
+            cols={ws.cols}
+            bind:write={writers[id]}
+            bind:termEl={termElements[id]}
+            on:cellsize={({ detail }) => {
+              termCharWidths[id] = detail.charWidth;
+              termRowHeights[id] = detail.rowHeight;
+            }}
+            on:data={({ detail: data }) =>
+              hasWriteAccess && handleInput(id, data)}
+            on:close={() => srocket?.send({ x: id })}
+            on:shrink={() => {
+              if (!hasWriteAccess) return;
+              const rows = Math.max(
+                Math.min(ws.rows - 4, TERM_MAX_ROWS),
+                TERM_MIN_ROWS,
+              );
+              const cols = Math.max(
+                Math.min(ws.cols - 10, TERM_MAX_COLS),
+                TERM_MIN_COLS,
+              );
+              if (rows !== ws.rows || cols !== ws.cols) {
+                srocket?.send({ m: [id, { ...ws, rows, cols }] });
+              }
+            }}
+            on:expand={() => {
+              if (!hasWriteAccess) return;
+              const rows = Math.min(ws.rows + 4, TERM_MAX_ROWS);
+              const cols = Math.min(ws.cols + 10, TERM_MAX_COLS);
               srocket?.send({ m: [id, { ...ws, rows, cols }] });
-            }
-          }}
-          on:expand={() => {
-            if (!hasWriteAccess) return;
-            const rows = Math.min(ws.rows + 4, TERM_MAX_ROWS);
-            const cols = Math.min(ws.cols + 10, TERM_MAX_COLS);
-            srocket?.send({ m: [id, { ...ws, rows, cols }] });
-          }}
-          on:bringToFront={() => {
-            if (!hasWriteAccess) return;
-            showNetworkInfo = false;
-            srocket?.send({ m: [id, null] });
-          }}
-          on:startMove={({ detail: event }) => {
-            if (!hasWriteAccess) return;
-            if (event.type === "pointerdown") {
-              const [x, y] = normalizePosition(event);
-              // Set movingSize BEFORE moving = id, so that if Svelte's reactive
-              // system re-evaluates `ws = id === moving ? movingSize : winsize`
-              // during the `moving = id` assignment, movingSize is already
-              // defined and `ws` will not be undefined.
-              movingSize = ws;
-              moving = id;
-              movingPointerId = event.pointerId;
-              movingOrigin = [x - movingSize.x, y - movingSize.y];
-              movingIsDone = false;
-            } else if (
-              event.type === "pointermove" &&
-              moving === id &&
-              !movingIsDone
-            ) {
-              const [x, y] = normalizePosition(event);
-              movingSize = {
-                ...movingSize,
-                x: Math.round(x - movingOrigin[0]),
-                y: Math.round(y - movingOrigin[1]),
-              };
-              sendMove({ m: [moving, movingSize] });
-            } else if (event.type === "pointerup" && moving === id) {
-              movingIsDone = true;
-              sendMove.cancel();
-              srocket?.send({ m: [moving, movingSize] });
-              movingPointerId = -1;
-            }
-          }}
-          on:focus={() => {
-            if (!hasWriteAccess) return;
-            focused = [...focused, id];
-          }}
-          on:blur={() => {
-            focused = focused.filter((i) => i !== id);
-          }}
-        />
+            }}
+            on:bringToFront={() => {
+              if (!hasWriteAccess) return;
+              showNetworkInfo = false;
+              srocket?.send({ m: [id, null] });
+            }}
+            on:startMove={({ detail: event }) => {
+              if (!hasWriteAccess) return;
+              if (event.type === "pointerdown") {
+                const [x, y] = normalizePosition(event);
+                // Set movingSize BEFORE moving = id, so that if Svelte's reactive
+                // system re-evaluates `ws = id === moving ? movingSize : winsize`
+                // during the `moving = id` assignment, movingSize is already
+                // defined and `ws` will not be undefined.
+                movingSize = ws;
+                moving = id;
+                movingPointerId = event.pointerId;
+                movingOrigin = [x - movingSize.x, y - movingSize.y];
+                movingIsDone = false;
+              } else if (
+                event.type === "pointermove" &&
+                moving === id &&
+                !movingIsDone
+              ) {
+                const [x, y] = normalizePosition(event);
+                movingSize = {
+                  ...movingSize,
+                  x: Math.round(x - movingOrigin[0]),
+                  y: Math.round(y - movingOrigin[1]),
+                };
+                sendMove({ m: [moving, movingSize] });
+              } else if (event.type === "pointerup" && moving === id) {
+                movingIsDone = true;
+                sendMove.cancel();
+                srocket?.send({ m: [moving, movingSize] });
+                movingPointerId = -1;
+              }
+            }}
+            on:focus={() => {
+              if (!hasWriteAccess) return;
+              focused = [...focused, id];
+            }}
+            on:blur={() => {
+              focused = focused.filter((i) => i !== id);
+            }}
+          />
 
-        <!-- User avatars -->
-        <div class="absolute bottom-2.5 right-2.5 pointer-events-none">
-          <Avatars
-            users={users.filter(
-              ([uid, user]) => uid !== userId && user.focus === id,
-            )}
+          <!-- User avatars -->
+          <div class="absolute bottom-2.5 right-2.5 pointer-events-none">
+            <Avatars
+              users={users.filter(
+                ([uid, user]) => uid !== userId && user.focus === id,
+              )}
+            />
+          </div>
+
+          <!-- Interactable element for resizing -->
+          <div
+            class="absolute w-5 h-5 -bottom-1 -right-1 cursor-nwse-resize"
+            on:pointerdown={(event) => {
+              event.stopPropagation();
+              if (!hasWriteAccess) return;
+              const cw = termCharWidths[id];
+              const rh = termRowHeights[id];
+              if (cw > 0 && rh > 0) {
+                resizing = id;
+                resizingPointerId = event.pointerId;
+                (event.currentTarget as HTMLElement).setPointerCapture(
+                  event.pointerId,
+                );
+                resizingOrigin = [
+                  event.pageX - ws.cols * cw,
+                  event.pageY - ws.rows * rh,
+                ];
+                resizingCell = [cw, rh];
+                resizingSize = ws;
+              }
+            }}
+            on:pointerup={(event) => {
+              if (resizing === id && event.pointerId === resizingPointerId) {
+                resizing = -1;
+                resizingPointerId = -1;
+                (event.currentTarget as HTMLElement).releasePointerCapture(
+                  event.pointerId,
+                );
+              }
+            }}
+            on:pointercancel={(event) => {
+              if (resizing === id && event.pointerId === resizingPointerId) {
+                resizing = -1;
+                resizingPointerId = -1;
+                (event.currentTarget as HTMLElement).releasePointerCapture(
+                  event.pointerId,
+                );
+              }
+            }}
           />
         </div>
-
-        <!-- Interactable element for resizing -->
-        <div
-          class="absolute w-5 h-5 -bottom-1 -right-1 cursor-nwse-resize"
-          on:pointerdown={(event) => {
-            event.stopPropagation();
-            if (!hasWriteAccess) return;
-            const cw = termCharWidths[id];
-            const rh = termRowHeights[id];
-            if (cw > 0 && rh > 0) {
-              resizing = id;
-              resizingPointerId = event.pointerId;
-              (event.currentTarget as HTMLElement).setPointerCapture(
-                event.pointerId,
-              );
-              resizingOrigin = [
-                event.pageX - ws.cols * cw,
-                event.pageY - ws.rows * rh,
-              ];
-              resizingCell = [cw, rh];
-              resizingSize = ws;
-            }
-          }}
-          on:pointerup={(event) => {
-            if (resizing === id && event.pointerId === resizingPointerId) {
-              resizing = -1;
-              resizingPointerId = -1;
-              (event.currentTarget as HTMLElement).releasePointerCapture(
-                event.pointerId,
-              );
-            }
-          }}
-          on:pointercancel={(event) => {
-            if (resizing === id && event.pointerId === resizingPointerId) {
-              resizing = -1;
-              resizingPointerId = -1;
-              (event.currentTarget as HTMLElement).releasePointerCapture(
-                event.pointerId,
-              );
-            }
-          }}
-        />
-      </div>
-    {/each}
+      {/each}
+    {:else}
+      <!-- Tab mode: single TabbedTerminal window -->
+      <TabbedTerminal
+        {shells}
+        {activeTabId}
+        x={tabGroupX}
+        y={tabGroupY}
+        cols={tabGroupCols}
+        rows={tabGroupRows}
+        {writers}
+        {termElements}
+        {center}
+        {zoom}
+        {hasWriteAccess}
+        on:switchTab={({ detail: { id } }) => (activeTabId = id)}
+        on:newTab={handleCreate}
+        on:closeTab={({ detail: { id } }) => srocket?.send({ x: id })}
+        on:move={handleTabMove}
+        on:resize={handleTabResize}
+        on:data={handleTabData}
+        on:bringToFront={() => {
+          showNetworkInfo = false;
+        }}
+        on:focus={handleTabFocus}
+        on:blur={handleTabBlur}
+      />
+    {/if}
 
     {#each users.filter(([id, user]) => id !== userId && user.cursor !== null) as [id, user] (id)}
       <div

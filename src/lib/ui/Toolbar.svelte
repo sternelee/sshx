@@ -12,12 +12,14 @@
   export let connected: boolean;
   export let hasWriteAccess: boolean | undefined;
   export let newMessages: boolean;
+  export let layoutMode: "canvas" | "tabs" = "canvas";
 
   const dispatch = createEventDispatcher<{
     create: void;
     chat: void;
     settings: void;
     networkInfo: void;
+    layoutChange: "canvas" | "tabs";
   }>();
 </script>
 
@@ -61,6 +63,64 @@
         <WifiIcon strokeWidth={1.5} class="p-0.5" />
       </button>
     </div>
+
+    <div class="v-divider" />
+
+    <div class="flex space-x-1" title="Layout mode">
+      <button
+        class="icon-button"
+        class:active={layoutMode === "canvas"}
+        title="Canvas mode — free floating terminals"
+        on:click={() => dispatch("layoutChange", "canvas")}
+      >
+        <!-- 2×2 grid icon -->
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="p-0.5"
+        >
+          <rect x="3" y="3" width="7" height="7" /><rect
+            x="14"
+            y="3"
+            width="7"
+            height="7"
+          /><rect x="3" y="14" width="7" height="7" /><rect
+            x="14"
+            y="14"
+            width="7"
+            height="7"
+          />
+        </svg>
+      </button>
+      <button
+        class="icon-button"
+        class:active={layoutMode === "tabs"}
+        title="Tab mode — all terminals in one window"
+        on:click={() => dispatch("layoutChange", "tabs")}
+      >
+        <!-- Tab window icon -->
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="p-0.5"
+        >
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M3 9h18M9 9v12" />
+        </svg>
+      </button>
+    </div>
   </div>
 </div>
 
@@ -84,6 +144,10 @@
   }
 
   .icon-button:active {
+    background-color: rgb(55, 48, 194);
+  }
+
+  .icon-button.active {
     background-color: rgb(55, 48, 194);
   }
 
