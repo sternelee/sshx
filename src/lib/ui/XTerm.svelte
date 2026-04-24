@@ -88,12 +88,17 @@
     if (!focused) return;
     const target = event.target as HTMLElement;
     if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
-      // Prevent the browser from stealing focus from wterm's textarea on Escape.
-      // Some browsers blur the focused textarea when Escape is pressed.
+      // wterm's own textarea keydown listener already handles all keys
+      // (including Escape → "\x1b") via its FIXED_KEYS table and calls
+      // e.preventDefault() itself.  We call it again here as belt-and-
+      // suspenders: some browsers still blur a focused textarea on Escape
+      // even when the original listener prevented default.  We must NOT
+      // call term?.focus() in a setTimeout here — doing so on an already-
+      // focused element triggers a blur+focus cycle in some browsers, which
+      // briefly sets `focused = false` and causes the keystroke immediately
+      // after Escape (e.g. a vim normal-mode command) to be silently dropped.
       if (event.key === "Escape") {
-        setTimeout(() => {
-          if (focused) term?.focus();
-        }, 0);
+        event.preventDefault();
       }
       return;
     }
