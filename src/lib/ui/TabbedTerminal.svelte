@@ -70,6 +70,24 @@
     activeEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
+  /**
+   * Refocus the active terminal whenever the active tab changes.
+   * We use requestAnimationFrame so the display:none toggle on the previous
+   * XTerm has already been applied before we try to focus the new one.
+   */
+  $: if (activeTabId) {
+    requestAnimationFrame(() => {
+      const el = termElements[activeTabId];
+      if (!el) return;
+      // wterm renders a hidden textarea (or an element with tabindex="0")
+      // that receives keyboard input. Focusing it restores keyboard input.
+      const focusable = el.querySelector<HTMLElement>(
+        'textarea, [tabindex="0"]',
+      );
+      focusable?.focus();
+    });
+  }
+
   // Char dimensions — reported by XTerm's cellsize event
   let charWidth = 0;
   let rowHeight = 0;
@@ -159,17 +177,26 @@
             kind="red"
             on:mousedown={(e) => {
               if (e.button !== 0) return;
+              e.preventDefault();
               // Close all shells in the group
               for (const [id] of shells) dispatch("closeTab", { id });
             }}
           />
           <CircleButton
             kind="yellow"
-            on:mousedown={(e) => e.button === 0 && handleShrink()}
+            on:mousedown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              handleShrink();
+            }}
           />
           <CircleButton
             kind="green"
-            on:mousedown={(e) => e.button === 0 && handleExpand()}
+            on:mousedown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              handleExpand();
+            }}
           />
         </CircleButtons>
       </div>
@@ -186,7 +213,10 @@
             data-tabitem
             data-tabid={id}
             on:mousedown={(e) => {
-              if (e.button === 0) dispatch("switchTab", { id });
+              if (e.button === 0) {
+                e.preventDefault();
+                dispatch("switchTab", { id });
+              }
             }}
             title={tabTitles[id] ?? "Terminal"}
           >
@@ -194,7 +224,10 @@
             <span
               class="tab-close"
               on:mousedown|stopPropagation={(e) => {
-                if (e.button === 0) dispatch("closeTab", { id });
+                if (e.button === 0) {
+                  e.preventDefault();
+                  dispatch("closeTab", { id });
+                }
               }}
             >×</span>
           </button>
@@ -207,7 +240,10 @@
         data-newbtn
         disabled={!connected || !hasWriteAccess}
         on:mousedown={(e) => {
-          if (e.button === 0 && connected && hasWriteAccess) dispatch("newTab");
+          if (e.button === 0 && connected && hasWriteAccess) {
+            e.preventDefault();
+            dispatch("newTab");
+          }
         }}
         title="New terminal"
       >＋</button>
@@ -250,8 +286,10 @@
           <button
             disabled={!connected || !hasWriteAccess}
             on:mousedown={(e) => {
-              if (e.button === 0 && connected && hasWriteAccess)
+              if (e.button === 0 && connected && hasWriteAccess) {
+                e.preventDefault();
                 dispatch("newTab");
+              }
             }}
           >New Terminal</button>
         </div>
