@@ -126,6 +126,12 @@
   let tabGroupCols = 220;
   let tabGroupRows = 50;
 
+  // Height of the toolbar wrapper div (bound via bind:clientHeight).
+  // Used to compute the top offset for the TabbedTerminal fixed overlay.
+  let toolbarWrapperHeight = 0;
+  // top-8 = 32px + wrapper height + 8px gap
+  $: toolbarBottom = 32 + toolbarWrapperHeight + 8;
+
   // Ensure activeTabId stays valid when shells change in tab mode
   $: if (layoutMode === "tabs" && shells.length > 0) {
     if (!shells.find(([id]) => id === activeTabId)) {
@@ -254,6 +260,25 @@
               locks[id] ??= createLock();
               subscriptions.add(id);
               srocket?.send({ s: [id, chunknums[id]] });
+              // In tab mode, new shells should match the current tab dimensions
+              // so the PTY is sized correctly from the start.
+              if (
+                layoutMode === "tabs" &&
+                tabGroupCols > 0 &&
+                tabGroupRows > 0
+              ) {
+                srocket?.send({
+                  m: [
+                    id,
+                    {
+                      x: tabGroupX,
+                      y: tabGroupY,
+                      rows: tabGroupRows,
+                      cols: tabGroupCols,
+                    },
+                  ],
+                });
+              }
             }
           }
         } else if (message.e) {
@@ -370,15 +395,9 @@
       const [, firstWinsize] = shells[0];
       tabGroupX = firstWinsize.x;
       tabGroupY = firstWinsize.y;
-      tabGroupCols = firstWinsize.cols;
-      tabGroupRows = firstWinsize.rows;
+      // cols/rows will be recomputed by TabbedTerminal's auto-fit on mount
       activeTabId = shells[shells.length - 1][0];
     }
-  }
-
-  function handleTabMove(event: CustomEvent<{ x: number; y: number }>) {
-    tabGroupX = event.detail.x;
-    tabGroupY = event.detail.y;
   }
 
   function handleTabResize(
@@ -507,6 +526,7 @@
 >
   <div
     class="absolute top-8 inset-x-0 flex justify-center pointer-events-none z-10"
+    bind:clientHeight={toolbarWrapperHeight}
   >
     <Toolbar
       {connected}
@@ -738,23 +758,18 @@
         </div>
       {/each}
     {:else}
-      <!-- Tab mode: single TabbedTerminal window -->
+      <!-- Tab mode: full-viewport TabbedTerminal overlay -->
       <TabbedTerminal
         {shells}
         {activeTabId}
-        x={tabGroupX}
-        y={tabGroupY}
-        cols={tabGroupCols}
-        rows={tabGroupRows}
+        {toolbarBottom}
+        {connected}
         {writers}
         {termElements}
-        {center}
-        {zoom}
         {hasWriteAccess}
         on:switchTab={({ detail: { id } }) => (activeTabId = id)}
         on:newTab={handleCreate}
         on:closeTab={({ detail: { id } }) => srocket?.send({ x: id })}
-        on:move={handleTabMove}
         on:resize={handleTabResize}
         on:data={handleTabData}
         on:bringToFront={() => {
