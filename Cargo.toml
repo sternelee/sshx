@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["crates/sshx-worker"]
 resolver = "2"
 
 [workspace.package]

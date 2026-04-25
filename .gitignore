@@ -1,7 +1,7 @@
 /.vscode
 
-/target
-
 /node_modules
 /.svelte-kit
 /build
+target
+.wrangler

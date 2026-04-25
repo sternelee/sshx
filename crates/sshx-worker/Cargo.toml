@@ -1,0 +1,45 @@
+[package]
+name = "sshx-worker"
+version = "0.4.1"
+authors = ["Eric Zhang <ekzhang1@gmail.com>"]
+license = "MIT"
+description = "Cloudflare Workers backend for sshx"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+
+[dependencies]
+worker = "0.5"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+ciborium = "0.2.1"
+bytes = { version = "1.11", features = ["serde"] }
+prost = "0.14"
+hmac = "0.13"
+sha2 = "0.11"
+base64 = "0.22"
+subtle = "2.6"
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+# getrandom 0.2 is what rand 0.10 uses on wasm32
+anyhow = "1.0"
+tracing = "0.1"
+tracing-web = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+
+[build-dependencies]
+prost-build = "0.14"
+
+[profile.release]
+opt-level = "s"
+lto = true

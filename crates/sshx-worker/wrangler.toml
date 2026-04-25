@@ -1,0 +1,27 @@
+name = "sshx-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-04-24"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "cargo install worker-build@^0.1 && worker-build --release"
+
+[[kv_namespaces]]
+binding = "SSHX_SESSIONS"
+id = "1678797ba80f4a15942f61d5e45b73c6"
+
+[[durable_objects.bindings]]
+name = "SESSION"
+class_name = "SessionObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionObject"]
+
+# Serve static assets from the SvelteKit build output.
+# Requires compatibility_date >= 2024-03-04 and wrangler >= 3.0
+[assets]
+directory = "../../build"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
