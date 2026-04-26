@@ -193,7 +193,7 @@ impl Controller {
             .origin
             .replace("http://", "ws://")
             .replace("https://", "wss://");
-        let ws_url = format!("{ws_url}/api/backend/{}", self.name);
+        let ws_url = format!("{ws_url}/api/backend/{}?token={}", self.name, self.token);
 
         let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
