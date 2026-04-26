@@ -109,10 +109,17 @@ async fn handle_open(mut req: Request, ctx: RouteContext<()>) -> Result<Response
     let namespace = ctx.env.durable_object("SESSION")?;
     let stub = namespace.id_from_name(&name)?.get_stub()?;
 
+    let kv_value = serde_json::json!({
+        "token": token,
+        "created_at": Date::now() as u64,
+        "encrypted_zeros": BASE64_STANDARD.encode(&encrypted_zeros),
+        "write_password_hash": write_password_hash.as_ref().map(|b| BASE64_STANDARD.encode(b)),
+    });
     let init_payload = serde_json::json!({
         "encrypted_zeros": BASE64_STANDARD.encode(&encrypted_zeros),
         "name": body.name,
         "write_password_hash": write_password_hash.as_ref().map(|b| BASE64_STANDARD.encode(b)),
+        "kv_data": kv_value.to_string(),
     });
 
     let init_req = Request::new_with_init(
@@ -129,12 +136,6 @@ async fn handle_open(mut req: Request, ctx: RouteContext<()>) -> Result<Response
 
     // Store token in KV.
     let kv = ctx.kv("SSHX_SESSIONS")?;
-    let kv_value = serde_json::json!({
-        "token": token,
-        "created_at": Date::now() as u64,
-        "encrypted_zeros": BASE64_STANDARD.encode(&encrypted_zeros),
-        "write_password_hash": write_password_hash.as_ref().map(|b| BASE64_STANDARD.encode(b)),
-    });
     kv.put(
         &format!("{KV_SESSION_PREFIX}{name}"),
         kv_value.to_string(),

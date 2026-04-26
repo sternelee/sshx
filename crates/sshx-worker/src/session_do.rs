@@ -5,8 +5,10 @@ use std::collections::HashMap;
 
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use bytes::Bytes;
+use hmac::{Hmac, KeyInit, Mac};
 use js_sys::Date;
 use prost::Message;
+use sha2::Sha256;
 use worker::{
     durable_object, Env, Request, Response, Result, State, WebSocket,
     WebSocketIncomingMessage, WebSocketPair,
@@ -18,6 +20,8 @@ use crate::state::{IdCounter, Metadata, SessionState};
 
 /// Timeout for a disconnected session to be evicted.
 const DISCONNECTED_SESSION_EXPIRY_MS: f64 = 300_000.0; // 5 minutes
+/// Default session expiry in KV (seconds).
+const KV_SESSION_TTL_SECONDS: u64 = 3600;
 /// Interval for saving snapshot to storage.
 const STORAGE_SYNC_INTERVAL_MS: f64 = 20_000.0; // 20 seconds
 
@@ -70,8 +74,10 @@ impl DurableObject for SessionObject {
     async fn alarm(&mut self) -> Result<Response> {
         *self.alarm_scheduled.borrow_mut() = false;
 
-        // Save snapshot to storage if backend is connected.
         let has_backend = !self.state.get_websockets_with_tag("backend").is_empty();
+        let has_frontend = !self.frontend_users.borrow().is_empty();
+
+        // Save snapshot to storage if backend is connected.
         if has_backend {
             if let Ok(snapshot) = self.session.snapshot() {
                 let arr = js_sys::Uint8Array::from(&snapshot[..]);
@@ -80,11 +86,23 @@ impl DurableObject for SessionObject {
             *self.last_backend_access.borrow_mut() = Date::now();
         }
 
+        // Refresh KV TTL if session is still active.
+        if has_backend || has_frontend {
+            if let Ok(kv_data) = self.state.storage().get::<String>("kv_data").await {
+                if let Ok(kv) = self.env.kv("SSHX_SESSIONS") {
+                    let name = self.session.metadata().name.clone();
+                    if !name.is_empty() {
+                        if let Ok(builder) = kv.put(&format!("session:{name}"), kv_data) {
+                            let _ = builder.expiration_ttl(KV_SESSION_TTL_SECONDS).execute().await;
+                        }
+                    }
+                }
+            }
+        }
+
         // Check if session has expired.
         let now = Date::now();
         let last = *self.last_backend_access.borrow();
-        let has_backend = !self.state.get_websockets_with_tag("backend").is_empty();
-        let has_frontend = !self.frontend_users.borrow().is_empty();
 
         if !has_backend && !has_frontend && now - last > DISCONNECTED_SESSION_EXPIRY_MS {
             // Evict the session.
@@ -180,7 +198,32 @@ impl SessionObject {
         Response::from_websocket(pair.client)
     }
 
-    async fn handle_backend_upgrade(&mut self, _req: Request) -> Result<Response> {
+    async fn handle_backend_upgrade(&mut self, req: Request) -> Result<Response> {
+        // Validate token from query string.
+        let url = req.url()?;
+        let path = url.path();
+        let name = path.strip_prefix("/api/backend/").unwrap_or("").to_string();
+        if name.is_empty() {
+            return Response::error("missing session name", 400);
+        }
+        let token = url
+            .query_pairs()
+            .find_map(|(k, v)| if k == "token" { Some(v.into_owned()) } else { None });
+        let token = match token {
+            Some(t) => t,
+            None => return Response::error("missing token", 401),
+        };
+        let secret = match self.env.secret("SESSION_SECRET") {
+            Ok(s) => s.to_string(),
+            Err(_) => return Response::error("SESSION_SECRET not configured", 500),
+        };
+        let mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        let expected = mac.chain_update(&name).finalize().into_bytes();
+        let expected = BASE64_STANDARD.encode(&expected);
+        if token != expected {
+            return Response::error("invalid token", 403);
+        }
+
         // Close existing backend if any.
         for ws in self.state.get_websockets_with_tag("backend") {
             let _ = ws.close(Some(1008), Some("new backend connected"));
@@ -426,6 +469,11 @@ impl SessionObject {
         let write_password_hash = body["write_password_hash"].as_str()
             .and_then(|s| BASE64_STANDARD.decode(s).ok())
             .map(Bytes::from);
+
+        // Store KV data for TTL refresh.
+        if let Some(kv_data) = body["kv_data"].as_str() {
+            let _ = self.state.storage().put("kv_data", kv_data).await;
+        }
 
         // Update metadata (this replaces the temporary one from new()).
         self.session = SessionState::new(Metadata {
