@@ -110,6 +110,79 @@ frontend in parallel on your machine.
 
 ## Deployment
 
+### Shuttle
+
+You can deploy `sshx-server` to [Shuttle](https://www.shuttle.dev/) using the
+included Shuttle entrypoint at `crates/sshx-server/src/bin/shuttle.rs`.
+
+This deployment path uses:
+
+- a **custom Shuttle service** so `sshx-server` keeps serving Axum HTTP,
+  WebSocket, and Tonic gRPC traffic on the same port;
+- the existing `embedded` static-assets feature so the Svelte frontend is baked
+  into the Rust binary at build time;
+- `shuttle_prebuild.sh`, which installs Node.js/NPM in Shuttle's builder image
+  and runs `npm ci && npm run build` before `cargo build`.
+
+**Prerequisites:**
+
+- [cargo-shuttle / shuttle CLI](https://docs.shuttle.dev/guides/cli)
+- a Shuttle account linked in the CLI
+
+1. Create or link a Shuttle project:
+
+   ```shell
+   shuttle project create --name <your-project-name>
+   # or: shuttle project link --name <your-project-name>
+   ```
+
+2. Copy `Secrets.toml.example` to `Secrets.toml` in the workspace root and fill
+   in your values:
+
+   ```toml
+   SSHX_SECRET = "replace-this-with-a-long-random-secret"
+
+   # Optional: set this if you want sshx to always generate browser URLs with a
+   # custom domain or a fixed public origin.
+   # SSHX_OVERRIDE_ORIGIN = "https://sshx.example.com"
+
+   # Optional: Redis snapshot storage.
+   # SSHX_REDIS_URL = "redis://..."
+
+   # Optional: only needed if you have a real multi-node mesh with per-node
+   # addresses. This is usually not practical on Shuttle.
+   # SSHX_HOST = "node-1.internal.example.com"
+   # SSHX_MESH_TLS = "true"
+   ```
+
+3. Deploy:
+
+   ```shell
+   shuttle deploy
+   ```
+
+4. Find the public URL in the Shuttle dashboard or CLI output, then connect the
+   client to that exact HTTPS origin:
+
+   ```shell
+   sshx --server https://<your-project-name>-<nonce>.shuttle.app
+   ```
+
+**Notes:**
+
+- Shuttle's default hostname includes a random suffix (`<name>-<nonce>`). If
+  you want stable session URLs, attach a custom domain and set
+  `SSHX_OVERRIDE_ORIGIN`.
+- Shuttle performs rolling deployments. Because `sshx-server` keeps active PTY
+  sessions in memory, existing sessions may be interrupted during redeploys or
+  instance replacement.
+- Redis alone does **not** make Shuttle redeploys seamless for sshx. The mesh
+  mode also needs per-instance hostnames (`SSHX_HOST`) so nodes can redirect
+  browsers and transfer session ownership, which Shuttle does not expose in an
+  sshx-friendly way by default.
+- The Shuttle integration is compiled behind the `shuttle` cargo feature. Local
+  development with the normal `sshx-server` binary is unchanged.
+
 ### Fly.io
 
 You can self-host `sshx-server` on [Fly.io](https://fly.io/) with the
