@@ -18,7 +18,15 @@ const STORAGE_SYNC_INTERVAL: Duration = Duration::from_secs(20);
 const STORAGE_EXPIRY: Duration = Duration::from_secs(300);
 
 /// TTL for cached ownership lookups to reduce Redis round-trips.
-const OWNERSHIP_CACHE_TTL: Duration = Duration::from_secs(2);
+///
+/// Set generously: cache invalidation is also driven by the transfer pub/sub
+/// channel (see `invalidate_ownership`) so a session migration takes effect
+/// well before the TTL expires. The TTL is the upper bound on how long a
+/// browser viewer connecting to a wrong node may be misrouted in the rare
+/// case that the transfer notification is lost. The main benefit of a long
+/// TTL is collapsing "viewer-join storms" (e.g. a tab refresh loop) into a
+/// single Redis pipeline call per session per window.
+const OWNERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 fn set_opts() -> redis::SetOptions {
     redis::SetOptions::default()
@@ -149,6 +157,17 @@ impl StorageMesh {
                 Err(err) => error!(?err, "failed to sync session {name}"),
             }
         }
+    }
+
+    /// Drop the cached ownership entry for a session.
+    ///
+    /// Call this when the local node learns ownership has changed (e.g. on a
+    /// transfer pub/sub notification). Without this hook, an aggressive
+    /// `OWNERSHIP_CACHE_TTL` would leave the local cache stale for up to the
+    /// full TTL window after a migration, causing requests for the session
+    /// to be misrouted. Cheap: a single DashMap remove.
+    pub fn invalidate_ownership(&self, name: &str) {
+        self.ownership_cache.remove(name);
     }
 
     /// Mark a session as closed, so it will expire and never be accessed again.
