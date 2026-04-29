@@ -1,14 +1,13 @@
 //! Core logic for sshx sessions, independent of message transport.
 
 use std::collections::HashMap;
-use std::ops::DerefMut;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use parking_lot::{RwLock, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock};
 use sshx_core::{
     proto::{server_update::ServerMessage, SequenceNumbers},
     IdCounter, Sid, Uid,
@@ -58,7 +57,12 @@ pub struct Session {
     metadata: Metadata,
 
     /// In-memory state for the session.
-    shells: RwLock<HashMap<Sid, State>>,
+    ///
+    /// The outer `RwLock` guards the shell map structure (insert / remove /
+    /// iterate). Each entry holds an `Arc<Mutex<State>>` so per-shell
+    /// mutations (the `add_data` hot path) only acquire one fine-grained
+    /// mutex without blocking other shells or readers of the map.
+    shells: RwLock<HashMap<Sid, Arc<Mutex<State>>>>,
 
     /// Metadata for currently connected users.
     users: RwLock<HashMap<Uid, WsUser>>,
@@ -169,8 +173,9 @@ impl Session {
         let shells = self.shells.read();
         let mut map = HashMap::with_capacity(shells.len());
         for (key, value) in &*shells {
-            if !value.closed {
-                map.insert(key.0, value.seqnum);
+            let shell = value.lock();
+            if !shell.closed {
+                map.insert(key.0, shell.seqnum);
             }
         }
         SequenceNumbers { map }
@@ -231,15 +236,23 @@ impl Session {
         mut chunknum: u64,
     ) -> impl Stream<Item = (u64, Vec<Bytes>)> + '_ {
         async_stream::stream! {
+            // Resolve the per-shell Arc once; subsequent iterations only
+            // touch the per-shell mutex, never the outer shells map.
+            let shell_arc = {
+                let shells = self.shells.read();
+                match shells.get(&id) {
+                    Some(s) => Arc::clone(s),
+                    None => return,
+                }
+            };
+
             while !self.shutdown.is_terminated() {
-                // We absolutely cannot hold `shells` across an await point,
-                // since that would cause deadlocks.
+                // Per-shell critical section: never spans an await.
                 let (seqnum, chunks, notified) = {
-                    let shells = self.shells.read();
-                    let shell = match shells.get(&id) {
-                        Some(shell) if !shell.closed => shell,
-                        _ => return,
-                    };
+                    let shell = shell_arc.lock();
+                    if shell.closed {
+                        return;
+                    }
                     let notify = Arc::clone(&shell.notify);
                     let notified = async move { notify.notified().await };
                     let mut seqnum = shell.byte_offset;
@@ -271,10 +284,12 @@ impl Session {
     /// Add a new shell to the session.
     pub fn add_shell(&self, id: Sid, center: (i32, i32)) -> Result<()> {
         use std::collections::hash_map::Entry::*;
-        let _guard = match self.shells.write().entry(id) {
+        match self.shells.write().entry(id) {
             Occupied(_) => bail!("shell already exists with id={id}"),
-            Vacant(v) => v.insert(State::default()),
-        };
+            Vacant(v) => {
+                v.insert(Arc::new(Mutex::new(State::default())));
+            }
+        }
         self.source.send_modify(|source| {
             let winsize = WsWinsize {
                 x: center.0,
@@ -289,13 +304,20 @@ impl Session {
 
     /// Terminates an existing shell.
     pub fn close_shell(&self, id: Sid) -> Result<()> {
-        match self.shells.write().get_mut(&id) {
-            Some(shell) if !shell.closed => {
-                shell.closed = true;
-                shell.notify.notify_waiters();
+        let shell_arc = {
+            let shells = self.shells.read();
+            match shells.get(&id) {
+                Some(s) => Arc::clone(s),
+                None => bail!("cannot close shell with id={id}, does not exist"),
             }
-            Some(_) => return Ok(()),
-            None => bail!("cannot close shell with id={id}, does not exist"),
+        };
+        {
+            let mut shell = shell_arc.lock();
+            if shell.closed {
+                return Ok(());
+            }
+            shell.closed = true;
+            shell.notify.notify_waiters();
         }
         self.source.send_modify(|source| {
             source.retain(|&(x, _)| x != id);
@@ -304,13 +326,19 @@ impl Session {
         Ok(())
     }
 
-    fn get_shell_mut(&self, id: Sid) -> Result<impl DerefMut<Target = State> + '_> {
-        let shells = self.shells.write();
+    /// Resolve a shell id to its `Arc<Mutex<State>>`, returning an error if
+    /// the shell is missing or already closed. Caller must lock the mutex.
+    fn get_shell_arc(&self, id: Sid) -> Result<Arc<Mutex<State>>> {
+        let shells = self.shells.read();
         match shells.get(&id) {
-            Some(shell) if !shell.closed => {
-                Ok(RwLockWriteGuard::map(shells, |s| s.get_mut(&id).unwrap()))
+            Some(arc) => {
+                // Cheap closed check before returning; full check is repeated
+                // by callers under the per-shell mutex (race-free).
+                if arc.lock().closed {
+                    bail!("cannot update shell with id={id}, already closed");
+                }
+                Ok(Arc::clone(arc))
             }
-            Some(_) => bail!("cannot update shell with id={id}, already closed"),
             None => bail!("cannot update shell with id={id}, does not exist"),
         }
     }
@@ -320,7 +348,11 @@ impl Session {
     /// Returns `true` if the terminal dimensions (rows/cols) actually changed,
     /// meaning the PTY should be resized.
     pub fn move_shell(&self, id: Sid, winsize: Option<WsWinsize>) -> Result<bool> {
-        let _guard = self.get_shell_mut(id)?; // Ensures mutual exclusion.
+        // Hold the per-shell mutex to ensure mutual exclusion vs add_data /
+        // close_shell. The state is not modified here; this is a structural
+        // guard against the shell vanishing mid-call.
+        let shell_arc = self.get_shell_arc(id)?;
+        let _guard = shell_arc.lock();
         let mut dims_changed = false;
         self.source.send_modify(|source| {
             if let Some(idx) = source.iter().position(|&(sid, _)| sid == id) {
@@ -335,7 +367,13 @@ impl Session {
 
     /// Receive new data into the session.
     pub fn add_data(&self, id: Sid, data: Bytes, seq: u64) -> Result<()> {
-        let mut shell = self.get_shell_mut(id)?;
+        let shell_arc = self.get_shell_arc(id)?;
+        let mut shell = shell_arc.lock();
+        if shell.closed {
+            // Lost a race with close_shell; the data drops on the floor,
+            // mirroring the prior behavior of returning early.
+            return Ok(());
+        }
         let overhead = self.chunk_overhead();
         let plaintext_len = self.plaintext_len(data.len() as u64);
 
