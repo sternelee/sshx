@@ -41,6 +41,7 @@
 | `14ae3db` | §3.4 (partial) `SHELL_STORED_BYTES` env var | ✅ — tiered storage still ⏸️ |
 | `cb976b9` | §2.5 cursor broadcast throttle (50 ms) | ✅ |
 | `fcde9ed` | §4.1 ownership cache TTL 2 s → 30 s + transfer invalidation hook | ✅ |
+| `7bc069b` | §5.4 AES-GCM `aead::Aead` → `aead::AeadInOut` in-place | ✅ — single allocation per chunk; wire format unchanged |
 
 ---
 
@@ -370,7 +371,7 @@ Already partially addressed in 4.1.
 
 **Observation**: existing logic resets `seq` after 3 outdated Sync messages. This is reasonable; document it inline.
 
-### 5.4 [🟡] [⏸️] AES-256-GCM: every chunk allocates `Vec` for nonce + ciphertext
+### 5.4 [🟡] [✅ `7bc069b`] AES-256-GCM: every chunk allocates `Vec` for nonce + ciphertext
 **Where**: `crates/sshx/src/encrypt.rs:147-167,180-194`.
 
 **Current**: encrypt path allocates `Vec::with_capacity(GCM_NONCE_SIZE + ciphertext.len())`, copies nonce in, copies ciphertext in. Decrypt path allocates ciphertext-sized `Vec` inside `aes_gcm::decrypt`.
@@ -541,3 +542,43 @@ Updated after the first round of changes. Status legend at top of file.
 - **§6.3** Multi-CLI per session.
 
 All landed commits keep the wire protocol bit-compatible with the previous release; the only externally visible additions are the new `SSHX_SHELL_STORED_BYTES` env var and the longer CLI reconnect interval.
+
+---
+
+## 10. Baselines (criterion)
+
+Initial baseline numbers, recorded after `7bc069b`. Apple M-series, release profile, 20 samples / 2 s measurement window. Use these as the regression reference for future optimisation work.
+
+Run all benches:
+
+```shell
+cargo bench -p sshx
+cargo bench -p sshx-server
+```
+
+| Bench | Group / input | Time (median) | Throughput (median) |
+|-------|---------------|---------------|---------------------|
+| `sshx::encrypt` | `encrypt_v2/4KiB` | 1.53 µs | 2.49 GiB/s |
+| `sshx::encrypt` | `decrypt_v2/4KiB` | 1.53 µs | 2.49 GiB/s |
+| `sshx::char_boundary` | `prev_char_boundary/multibyte/4KiB` | 1.18 ns | — |
+| `sshx::char_boundary` | `prev_char_boundary/multibyte/64KiB` | 1.17 ns | — |
+| `sshx::char_boundary` | `prev_char_boundary/multibyte/1024KiB` | 1.17 ns | — |
+| `sshx-server::snapshot` | `encode+zstd3/1sh_32KiB` | 2.43 µs | (input-rate, see note) |
+| `sshx-server::snapshot` | `encode+zstd3/4sh_64KiB` | 6.42 µs | |
+| `sshx-server::snapshot` | `encode+zstd3/16sh_128KiB` | 11.5 µs | |
+
+Notes:
+
+- `prev_char_boundary` is constant in input length — confirms the §1.5 rewrite is O(1) regardless of how far into a multi-byte string we scan.
+- `encrypt_v2` / `decrypt_v2` 1.53 µs / 4 KiB ≈ 2.5 GiB/s is the post-`7bc069b` AeadInOut number; pre-rewrite would need a `git revert` for an A/B comparison.
+- `session_snapshot` throughput is reported against *input* bytes; per-shell pruning at `SHELL_SNAPSHOT_BYTES = 32 KiB` means actual serialized payload is much smaller. Track absolute time, not throughput.
+
+---
+
+## 11. Items evaluated and skipped
+
+Documented for future readers so they don't re-evaluate them without new evidence.
+
+- **§5.2 decoder buffer reservation** — `content.reserve(decoder.max_utf8_buffer_length(n).unwrap())` in `runner.rs:81` was flagged as a possible micro-optimisation. On inspection: the reservation is bounded by the input read size (≤ 65 536 bytes) so `unwrap()` cannot panic, and `String::reserve` is amortized O(1) — there's no real allocation to elide. Skipped.
+- **§5.1 PTY read pipelining** — splitting PTY read from encrypt+send into two tasks via channel was rejected as not worth ~50 LOC of complexity in the absence of a baseline showing it's hot. The current single-buffer design also keeps backpressure trivial. Reopen if an end-to-end keystroke-latency benchmark proves otherwise.
+- **#6 / Argon2 KDF off-WS-task** — re-checked: server-side `web/socket.rs` only does `subtle::ct_eq` on hashes derived by the browser, not the Argon2 KDF itself. The bottleneck this item describes is purely browser-side. No Rust change applies.
