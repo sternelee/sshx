@@ -70,7 +70,10 @@ impl Session {
         };
         let data = message.encode_to_vec();
         ensure!(data.len() < MAX_SNAPSHOT_SIZE, "snapshot too large");
-        Ok(zstd::bulk::compress(&data, 15)?)
+        // Level 3 gives ~3-5x faster compression vs level 15 with only
+        // ~10-20% larger output. Snapshots are short-lived in Redis, so CPU
+        // matters more than ratio.
+        Ok(zstd::bulk::compress(&data, 3)?)
     }
 
     /// Restore the session from a previous compressed snapshot.
