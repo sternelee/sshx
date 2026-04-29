@@ -127,7 +127,12 @@ impl Session {
             epoch: now,
             last_accessed_ms: AtomicU64::new(0),
             source: watch::channel(Vec::new()).0,
-            broadcast: broadcast::channel(256).0,
+            // Capacity sized for bursts of metadata events (cursor moves,
+            // chat, shell open/close) under heavy fan-out. Slow subscribers
+            // that lag past this drop with `RecvError::Lagged`, which the
+            // socket loop tolerates. 1024 ~ 32 KiB of pointer-sized slots,
+            // negligible per session.
+            broadcast: broadcast::channel(1024).0,
             update_tx,
             update_rx,
             sync_notify: Notify::new(),
