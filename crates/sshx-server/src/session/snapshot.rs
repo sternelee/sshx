@@ -1,8 +1,10 @@
 //! Snapshot and restore sessions from serialized state.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
+use parking_lot::Mutex;
 use prost::Message;
 use sshx_core::{
     proto::{SerializedSession, SerializedShell},
@@ -28,7 +30,11 @@ impl Session {
                 .shells
                 .read()
                 .iter()
-                .map(|(sid, shell)| {
+                .map(|(sid, shell_arc)| {
+                    // Lock each per-shell mutex briefly to read its state.
+                    // Snapshot is rare (every 20 s) so contention with
+                    // add_data is negligible.
+                    let shell = shell_arc.lock();
                     // Prune off data until its total length is at most `SHELL_SNAPSHOT_BYTES`.
                     let mut prefix = 0;
                     let mut chunk_offset = shell.chunk_offset;
@@ -108,7 +114,7 @@ impl Session {
                 closed: shell.closed,
                 notify: Default::default(),
             };
-            shells.insert(Sid(sid), shell);
+            shells.insert(Sid(sid), Arc::new(Mutex::new(shell)));
         }
         drop(shells);
         session.source.send_replace(winsizes);
