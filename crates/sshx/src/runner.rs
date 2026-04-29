@@ -139,12 +139,15 @@ async fn shell_task(
     Ok(())
 }
 
-/// Find the last char boundary before an index in O(1) time.
-fn prev_char_boundary(s: &str, i: usize) -> usize {
-    (0..=i)
-        .rev()
-        .find(|&j| s.is_char_boundary(j))
-        .expect("no previous char boundary")
+/// Find the last char boundary at or before an index in O(1) time.
+///
+/// A UTF-8 codepoint is at most 4 bytes, so this loop runs at most 4 times
+/// regardless of `i`, even when scanning long stretches of multibyte text.
+fn prev_char_boundary(s: &str, mut i: usize) -> usize {
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 async fn echo_task(
