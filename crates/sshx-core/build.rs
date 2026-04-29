@@ -31,6 +31,14 @@ fn main() {
 
     tonic_prost_build::configure()
         .file_descriptor_set_path(&descriptor_path)
+        // Generate `bytes::Bytes` instead of `Vec<u8>` for every `bytes`
+        // field in the schema. Bytes is reference-counted and supports
+        // zero-copy slicing, so values flowing through the gRPC stack -
+        // terminal output, encrypted blobs - can be subliced/cloned/forwarded
+        // without reallocation. The hot path for terminal data
+        // (sshx::Runner -> sshx_server::Session -> WebSocket subscribers)
+        // is dominated by these fields.
+        .bytes(".")
         .compile_protos(&["proto/sshx.proto"], &["proto/"])
         .expect("Failed to compile protobuf");
 

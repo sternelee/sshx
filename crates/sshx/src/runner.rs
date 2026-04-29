@@ -121,7 +121,7 @@ async fn shell_task(
             );
             let data = TerminalData {
                 id: id.0,
-                data: segment_data,
+                data: segment_data.into(),
                 seq: (content_offset + start) as u64,
             };
             output_tx.send(ClientMessage::Data(data)).await?;
@@ -163,7 +163,9 @@ async fn echo_task(
                 let msg = String::from_utf8_lossy(&data);
                 let term_data = TerminalData {
                     id: id.0,
-                    data: encrypt.encrypt(0x100000000 | id.0 as u64, seq, msg.as_bytes()),
+                    data: encrypt
+                        .encrypt(0x100000000 | id.0 as u64, seq, msg.as_bytes())
+                        .into(),
                     seq,
                 };
                 output_tx.send(ClientMessage::Data(term_data)).await?;

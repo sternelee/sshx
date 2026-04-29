@@ -6,8 +6,8 @@ pub struct TerminalData {
     #[prost(uint32, tag = "1")]
     pub id: u32,
     /// Encrypted, UTF-8 terminal data.
-    #[prost(bytes = "vec", tag = "2")]
-    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub data: ::prost::bytes::Bytes,
     /// Sequence number of the first byte.
     #[prost(uint64, tag = "3")]
     pub seq: u64,
@@ -19,8 +19,8 @@ pub struct TerminalInput {
     #[prost(uint32, tag = "1")]
     pub id: u32,
     /// Encrypted binary sequence of terminal data.
-    #[prost(bytes = "vec", tag = "2")]
-    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub data: ::prost::bytes::Bytes,
     /// Offset of the first byte for encryption.
     #[prost(uint64, tag = "3")]
     pub offset: u64,
@@ -45,14 +45,14 @@ pub struct OpenRequest {
     #[prost(string, tag = "1")]
     pub origin: ::prost::alloc::string::String,
     /// Encrypted zero block, for client verification.
-    #[prost(bytes = "vec", tag = "2")]
-    pub encrypted_zeros: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub encrypted_zeros: ::prost::bytes::Bytes,
     /// Name of the session (user@hostname).
     #[prost(string, tag = "3")]
     pub name: ::prost::alloc::string::String,
     /// Hashed write password, if read-only mode is enabled.
-    #[prost(bytes = "vec", optional, tag = "4")]
-    pub write_password_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "bytes", optional, tag = "4")]
+    pub write_password_hash: ::core::option::Option<::prost::bytes::Bytes>,
 }
 /// Details of a newly-created sshx session.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -164,8 +164,8 @@ pub struct CloseResponse {}
 /// Snapshot of a session, used to restore state for persistence across servers.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SerializedSession {
-    #[prost(bytes = "vec", tag = "1")]
-    pub encrypted_zeros: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub encrypted_zeros: ::prost::bytes::Bytes,
     #[prost(map = "uint32, message", tag = "2")]
     pub shells: ::std::collections::HashMap<u32, SerializedShell>,
     #[prost(uint32, tag = "3")]
@@ -174,15 +174,15 @@ pub struct SerializedSession {
     pub next_uid: u32,
     #[prost(string, tag = "5")]
     pub name: ::prost::alloc::string::String,
-    #[prost(bytes = "vec", optional, tag = "6")]
-    pub write_password_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "bytes", optional, tag = "6")]
+    pub write_password_hash: ::core::option::Option<::prost::bytes::Bytes>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SerializedShell {
     #[prost(uint64, tag = "1")]
     pub seqnum: u64,
-    #[prost(bytes = "vec", repeated, tag = "2")]
-    pub data: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "bytes", repeated, tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
     #[prost(uint64, tag = "3")]
     pub chunk_offset: u64,
     #[prost(uint64, tag = "4")]
