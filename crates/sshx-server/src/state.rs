@@ -174,6 +174,10 @@ impl ServerState {
         if let Some(mesh) = &self.mesh {
             let mut transfers = pin!(mesh.listen_for_transfers());
             while let Some(name) = transfers.next().await {
+                // Drop the local ownership cache before removing the session
+                // so that any concurrent `get_owner(&name)` lookup misses the
+                // cache and re-reads from Redis, preventing stale routing.
+                mesh.invalidate_ownership(&name);
                 self.remove(&name);
             }
         }
