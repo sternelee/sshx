@@ -83,12 +83,15 @@ pub struct Session {
     /// Watch channel source for the ordered list of open shells and sizes.
     source: watch::Sender<Vec<(Sid, WsWinsize)>>,
 
-    /// Broadcasts updates to all WebSocket clients.
+    /// Broadcasts pre-encoded CBOR frames to all WebSocket clients.
     ///
-    /// Every update inside this channel must be of idempotent form, since
-    /// messages may arrive before or after any snapshot of the current session
-    /// state. Duplicated events should remain consistent.
-    broadcast: broadcast::Sender<WsServer>,
+    /// Frames are produced once via `broadcast_msg` and shared as `Bytes`
+    /// across all subscribers, so per-broadcast CPU is independent of
+    /// subscriber count. Every update inside this channel must be of
+    /// idempotent form, since messages may arrive before or after any
+    /// snapshot of the current session state. Duplicated events should
+    /// remain consistent.
+    broadcast: broadcast::Sender<Bytes>,
 
     /// Sender end of a channel that buffers messages for the client.
     update_tx: async_channel::Sender<ServerMessage>,
@@ -174,10 +177,32 @@ impl Session {
     }
 
     /// Receive a notification on broadcasted message events.
+    ///
+    /// Yields pre-encoded CBOR frames; subscribers should forward them as
+    /// WebSocket binary messages without re-serializing.
     pub fn subscribe_broadcast(
         &self,
-    ) -> impl Stream<Item = Result<WsServer, BroadcastStreamRecvError>> + Unpin {
+    ) -> impl Stream<Item = Result<Bytes, BroadcastStreamRecvError>> + Unpin {
         BroadcastStream::new(self.broadcast.subscribe())
+    }
+
+    /// Encode a `WsServer` once and broadcast the resulting CBOR `Bytes`.
+    ///
+    /// Returns `Ok(())` whether or not there are subscribers (a `RecvError`
+    /// from `broadcast::Sender::send` is intentionally swallowed). Encoding
+    /// itself is infallible for our message types but the writer interface
+    /// returns `Result`, so we propagate that out.
+    fn broadcast_msg(&self, msg: WsServer) -> Result<()> {
+        // Skip the encode entirely if there are no listeners. Saves a few
+        // KiB of allocation on cursor moves in single-viewer sessions.
+        if self.broadcast.receiver_count() == 0 {
+            return Ok(());
+        }
+        let mut buf = Vec::with_capacity(64);
+        ciborium::ser::into_writer(&msg, &mut buf)
+            .context("ciborium encode failed for broadcast frame")?;
+        self.broadcast.send(Bytes::from(buf)).ok();
+        Ok(())
     }
 
     /// Receive a notification every time the set of shells is changed.
@@ -369,9 +394,7 @@ impl Session {
             f(user);
             user.clone()
         };
-        self.broadcast
-            .send(WsServer::UserDiff(id, Some(updated_user)))
-            .ok();
+        self.broadcast_msg(WsServer::UserDiff(id, Some(updated_user)))?;
         Ok(())
     }
 
@@ -397,7 +420,7 @@ impl Session {
                     can_write,
                 };
                 v.insert(user.clone());
-                self.broadcast.send(WsServer::UserDiff(id, Some(user))).ok();
+                self.broadcast_msg(WsServer::UserDiff(id, Some(user)))?;
                 Ok(UserGuard(self, id))
             }
         }
@@ -408,7 +431,7 @@ impl Session {
         if self.users.write().remove(&id).is_none() {
             warn!(%id, "invariant violation: removed user that does not exist");
         }
-        self.broadcast.send(WsServer::UserDiff(id, None)).ok();
+        self.broadcast_msg(WsServer::UserDiff(id, None)).ok();
     }
 
     /// Check if a user has write permission in the session.
@@ -428,15 +451,14 @@ impl Session {
             let users = self.users.read();
             users.get(&id).context("user not found")?.name.clone()
         };
-        self.broadcast
-            .send(WsServer::Hear(id, name, msg.into()))
-            .ok();
+        self.broadcast_msg(WsServer::Hear(id, name, msg.into()))?;
         Ok(())
     }
 
     /// Send a measurement of the shell latency.
     pub fn send_latency_measurement(&self, latency: u64) {
-        self.broadcast.send(WsServer::ShellLatency(latency)).ok();
+        // Encoding is infallible for u64; ignore any error to keep the API.
+        self.broadcast_msg(WsServer::ShellLatency(latency)).ok();
     }
 
     /// Register a backend client heartbeat, refreshing the timestamp.
