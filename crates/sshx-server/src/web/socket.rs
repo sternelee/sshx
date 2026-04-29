@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,9 +14,8 @@ use futures_util::SinkExt;
 use sshx_core::proto::{server_update::ServerMessage, NewShell, TerminalInput, TerminalSize};
 use sshx_core::Sid;
 use subtle::ConstantTimeEq;
-use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt, StreamMap};
 use tracing::{error, info_span, warn, Instrument};
 
 use crate::session::Session;
@@ -147,7 +147,14 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     send(socket, WsServer::Users(session.list_users())).await?;
 
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
-    let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u64, Vec<Bytes>)>(64);
+
+    // Per-shell chunk streams merged into the main select loop. Each
+    // `Subscribe` inserts a 'static stream (constructed via async_stream so it
+    // can carry an `Arc<Session>` clone) keyed by `Sid`. Avoids the previous
+    // per-subscription `tokio::spawn` plus `mpsc(64)` hop, which added a
+    // task-wakeup and channel-copy on every chunk batch.
+    type ChunkStream = Pin<Box<dyn Stream<Item = (u64, Vec<Bytes>)> + Send>>;
+    let mut chunk_streams: StreamMap<Sid, ChunkStream> = StreamMap::new();
 
     // Cursor throttle state. `pending_cursor` holds the most recent cursor
     // value that has not yet been broadcast; `cursor_sleep` fires when the
@@ -176,7 +183,7 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 send(socket, WsServer::Shells(shells)).await?;
                 continue;
             }
-            Some((id, seqnum, chunks)) = chunks_rx.recv() => {
+            Some((id, (seqnum, chunks))) = chunk_streams.next() => {
                 send(socket, WsServer::Chunks(id, seqnum, chunks)).await?;
                 continue;
             }
@@ -289,16 +296,19 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 }
                 subscribed.insert(id);
                 let session = Arc::clone(&session);
-                let chunks_tx = chunks_tx.clone();
-                tokio::spawn(async move {
-                    let stream = session.subscribe_chunks(id, chunknum);
-                    tokio::pin!(stream);
-                    while let Some((seqnum, chunks)) = stream.next().await {
-                        if chunks_tx.send((id, seqnum, chunks)).await.is_err() {
-                            break;
-                        }
+                // Wrap the borrowed `subscribe_chunks` stream in an
+                // async_stream that owns an `Arc<Session>` clone, lifting it
+                // to 'static so it can live inside the StreamMap. The
+                // `move` brings `session` into the generator; the inner
+                // stream then borrows it for the lifetime of the generator.
+                let stream = async_stream::stream! {
+                    let inner = session.subscribe_chunks(id, chunknum);
+                    tokio::pin!(inner);
+                    while let Some(item) = inner.next().await {
+                        yield item;
                     }
-                });
+                };
+                chunk_streams.insert(id, Box::pin(stream));
             }
             WsClient::Chat(msg) => {
                 session.send_chat(user_id, &msg)?;
