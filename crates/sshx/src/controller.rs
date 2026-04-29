@@ -23,7 +23,13 @@ use crate::runner::{Runner, ShellData};
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Interval to automatically reestablish connections.
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+///
+/// Each reconnect closes the gRPC stream, opens a new TCP+TLS connection,
+/// and resyncs state, briefly stalling input forwarding (typically 50-500 ms
+/// over WAN). The original 60 s value caused user-visible periodic hiccups.
+/// 10 minutes still defends against long-lived proxies that silently drop
+/// idle streams while reducing reconnect-induced jitter by 10x.
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(600);
 
 /// Handles a single session's communication with the remote server.
 pub struct Controller {
