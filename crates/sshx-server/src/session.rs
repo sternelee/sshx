@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 use std::ops::DerefMut;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
+use parking_lot::{RwLock, RwLockWriteGuard};
 use sshx_core::{
     proto::{server_update::ServerMessage, SequenceNumbers},
     IdCounter, Sid, Uid,
@@ -53,8 +55,19 @@ pub struct Session {
     /// Atomic counter to get new, unique IDs.
     counter: IdCounter,
 
-    /// Timestamp of the last backend client message from an active connection.
-    last_accessed: Mutex<Instant>,
+    /// Reference instant for `last_accessed_*_ms` fields.
+    ///
+    /// Stored as a tokio `Instant` so we can compute elapsed durations
+    /// cheaply via `Instant::now().duration_since(epoch)`. The atomic field
+    /// `last_accessed_ms` holds the offset from this reference in
+    /// milliseconds, allowing lock-free reads/writes from the hot path.
+    epoch: Instant,
+
+    /// Milliseconds since `epoch` of the last backend client message.
+    ///
+    /// Updated on every gRPC update from the CLI; read by the periodic
+    /// session expiry sweep. Using an atomic avoids a per-update mutex.
+    last_accessed_ms: AtomicU64,
 
     /// Watch channel source for the ordered list of open shells and sizes.
     source: watch::Sender<Vec<(Sid, WsWinsize)>>,
@@ -111,7 +124,8 @@ impl Session {
             shells: RwLock::new(HashMap::new()),
             users: RwLock::new(HashMap::new()),
             counter: IdCounter::default(),
-            last_accessed: Mutex::new(now),
+            epoch: now,
+            last_accessed_ms: AtomicU64::new(0),
             source: watch::channel(Vec::new()).0,
             broadcast: broadcast::channel(256).0,
             update_tx,
@@ -411,12 +425,15 @@ impl Session {
 
     /// Register a backend client heartbeat, refreshing the timestamp.
     pub fn access(&self) {
-        *self.last_accessed.lock() = Instant::now();
+        let elapsed = Instant::now().duration_since(self.epoch).as_millis() as u64;
+        self.last_accessed_ms.store(elapsed, Ordering::Relaxed);
     }
 
-    /// Returns the timestamp of the last backend client activity.
-    pub fn last_accessed(&self) -> Instant {
-        *self.last_accessed.lock()
+    /// Returns the duration since the last backend client activity.
+    pub fn last_accessed_elapsed(&self) -> Duration {
+        let now_ms = Instant::now().duration_since(self.epoch).as_millis() as u64;
+        let last_ms = self.last_accessed_ms.load(Ordering::Relaxed);
+        Duration::from_millis(now_ms.saturating_sub(last_ms))
     }
 
     /// Access the sender of the client message channel for this session.
