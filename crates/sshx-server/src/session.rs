@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -25,7 +25,18 @@ use crate::web::protocol::{WsServer, WsUser, WsWinsize};
 mod snapshot;
 
 /// Store a rolling buffer with at most this quantity of output, per shell.
-const SHELL_STORED_BYTES: u64 = 1 << 21; // 2 MiB
+///
+/// Defaults to 2 MiB. Override with the `SSHX_SHELL_STORED_BYTES` env var
+/// (parsed as a `u64`, in bytes) to trade memory for replay history. Larger
+/// values let new viewers reconstruct more scrollback before requesting
+/// resyncs but multiply per-shell memory usage proportionally.
+static SHELL_STORED_BYTES: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("SSHX_SHELL_STORED_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v >= 4096)
+        .unwrap_or(1 << 21) // 2 MiB
+});
 
 /// Static metadata for this session.
 #[derive(Debug, Clone)]
@@ -323,9 +334,9 @@ impl Session {
 
             // Prune old chunks if we've exceeded the maximum stored bytes.
             let mut stored_bytes = shell.seqnum - shell.byte_offset;
-            if stored_bytes > SHELL_STORED_BYTES {
+            if stored_bytes > *SHELL_STORED_BYTES {
                 let mut offset = 0;
-                while offset < shell.data.len() && stored_bytes > SHELL_STORED_BYTES {
+                while offset < shell.data.len() && stored_bytes > *SHELL_STORED_BYTES {
                     let bytes = self.plaintext_len(shell.data[offset].len() as u64);
                     stored_bytes -= bytes;
                     shell.chunk_offset += 1;
