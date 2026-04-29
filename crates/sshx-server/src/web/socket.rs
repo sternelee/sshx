@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::extract::{
@@ -13,12 +14,22 @@ use sshx_core::proto::{server_update::ServerMessage, NewShell, TerminalInput, Te
 use sshx_core::Sid;
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Instant};
 use tokio_stream::StreamExt;
 use tracing::{error, info_span, warn, Instrument};
 
 use crate::session::Session;
 use crate::web::protocol::{WsClient, WsServer};
 use crate::ServerState;
+
+/// Minimum interval between cursor-position broadcasts per WebSocket client.
+///
+/// Cursor moves arrive at the browser frame rate (often 60 Hz). Without
+/// throttling, every move triggers a fan-out broadcast that re-encodes a
+/// `UserDiff` frame and ships it to every viewer in the session. 50 ms
+/// (~20 Hz) preserves smooth pointer feedback while cutting cursor-driven
+/// CPU and network traffic by ~3x in the common case.
+const CURSOR_INTERVAL: Duration = Duration::from_millis(50);
 
 pub async fn get_session_ws(
     Path(name): Path<String>,
@@ -138,6 +149,18 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
     let mut subscribed = HashSet::new(); // prevent duplicate subscriptions
     let (chunks_tx, mut chunks_rx) = mpsc::channel::<(Sid, u64, Vec<Bytes>)>(64);
 
+    // Cursor throttle state. `pending_cursor` holds the most recent cursor
+    // value that has not yet been broadcast; `cursor_sleep` fires when the
+    // throttle window elapses. `cursor_armed` gates the timer arm so the
+    // sleep future only resolves when work is pending.
+    let mut last_cursor_sent = Instant::now()
+        .checked_sub(CURSOR_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    let mut pending_cursor: Option<Option<(i32, i32)>> = None;
+    let cursor_sleep = sleep(Duration::from_secs(0));
+    tokio::pin!(cursor_sleep);
+    let mut cursor_armed = false;
+
     let mut shells_stream = session.subscribe_shells();
     loop {
         let msg = tokio::select! {
@@ -157,6 +180,14 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 send(socket, WsServer::Chunks(id, seqnum, chunks)).await?;
                 continue;
             }
+            () = &mut cursor_sleep, if cursor_armed => {
+                cursor_armed = false;
+                if let Some(cursor) = pending_cursor.take() {
+                    session.update_user(user_id, |user| user.cursor = cursor)?;
+                    last_cursor_sent = Instant::now();
+                }
+                continue;
+            }
             result = recv(socket) => {
                 match result? {
                     Some(msg) => msg,
@@ -173,7 +204,24 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
                 }
             }
             WsClient::SetCursor(cursor) => {
-                session.update_user(user_id, |user| user.cursor = cursor)?;
+                let now = Instant::now();
+                if now.duration_since(last_cursor_sent) >= CURSOR_INTERVAL {
+                    // Window has elapsed: broadcast immediately and reset.
+                    session.update_user(user_id, |user| user.cursor = cursor)?;
+                    last_cursor_sent = now;
+                    pending_cursor = None;
+                    cursor_armed = false;
+                } else {
+                    // Within throttle window: coalesce; the timer will flush
+                    // the most recent value once the window expires.
+                    pending_cursor = Some(cursor);
+                    if !cursor_armed {
+                        cursor_sleep
+                            .as_mut()
+                            .reset(last_cursor_sent + CURSOR_INTERVAL);
+                        cursor_armed = true;
+                    }
+                }
             }
             WsClient::SetFocus(id) => {
                 session.update_user(user_id, |user| user.focus = id)?;
