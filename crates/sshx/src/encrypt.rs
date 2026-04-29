@@ -1,7 +1,7 @@
 //! Encryption of byte streams based on a random key.
 
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::aead::AeadInOut;
 use aes_gcm::{Aes256Gcm, Key, KeyInit as _};
 use rand::Rng;
 
@@ -112,18 +112,18 @@ impl Encrypt {
                 let key: Key<Aes256Gcm> = self.v2_key.unwrap().into();
                 let cipher = Aes256Gcm::new(&key);
                 let nonce = [0u8; GCM_NONCE_SIZE]; // deterministic zero nonce for zeros
-                let payload = Payload {
-                    msg: &[0u8; V1_HASH_LEN],
-                    aad: &[],
-                };
-                let ciphertext = cipher
-                    .encrypt((&nonce).into(), payload)
+                                                   // Layout: nonce (12) | ciphertext (16) | tag (16) = 44 bytes.
+                                                   // Encrypt in-place into a single allocation, no intermediate Vec.
+                let mut out = vec![0u8; V2_ZEROS_LEN];
+                out[..GCM_NONCE_SIZE].copy_from_slice(&nonce);
+                let (_, rest) = out.split_at_mut(GCM_NONCE_SIZE);
+                let (msg_slot, tag_slot) = rest.split_at_mut(V1_HASH_LEN);
+                // msg_slot already zeros from vec! initialization.
+                let tag = cipher
+                    .encrypt_inout_detached((&nonce).into(), &[], msg_slot.into())
                     .expect("GCM encryption of zeros should not fail");
-                // Prepend nonce: 12 + 16 + 16 = 44 bytes
-                let mut result = Vec::with_capacity(GCM_NONCE_SIZE + ciphertext.len());
-                result.extend_from_slice(&nonce);
-                result.extend_from_slice(&ciphertext);
-                result
+                tag_slot.copy_from_slice(&tag);
+                out
             }
         }
     }
@@ -151,18 +151,19 @@ impl Encrypt {
                 let mut nonce = [0u8; GCM_NONCE_SIZE];
                 rand::rng().fill_bytes(&mut nonce);
                 let aad = aad(stream_num, offset);
-                let payload = Payload {
-                    msg: data,
-                    aad: &aad,
-                };
-                let ciphertext = cipher
-                    .encrypt((&nonce).into(), payload)
+                // Layout: nonce | ciphertext (= plaintext len) | tag (16).
+                // Single allocation, in-place encryption — no intermediate Vec.
+                let mut out = Vec::with_capacity(GCM_NONCE_SIZE + data.len() + GCM_TAG_SIZE);
+                out.extend_from_slice(&nonce);
+                out.extend_from_slice(data);
+                out.resize(GCM_NONCE_SIZE + data.len() + GCM_TAG_SIZE, 0);
+                let (_, rest) = out.split_at_mut(GCM_NONCE_SIZE);
+                let (msg_slot, tag_slot) = rest.split_at_mut(data.len());
+                let tag = cipher
+                    .encrypt_inout_detached((&nonce).into(), &aad, msg_slot.into())
                     .expect("GCM encryption should not fail");
-                // Prepend nonce
-                let mut result = Vec::with_capacity(GCM_NONCE_SIZE + ciphertext.len());
-                result.extend_from_slice(&nonce);
-                result.extend_from_slice(&ciphertext);
-                result
+                tag_slot.copy_from_slice(&tag);
+                out
             }
         }
     }
@@ -180,18 +181,19 @@ impl Encrypt {
                 if data.len() < GCM_NONCE_SIZE + GCM_TAG_SIZE {
                     anyhow::bail!("ciphertext too short");
                 }
-                let nonce = &data[..GCM_NONCE_SIZE];
-                let ciphertext = &data[GCM_NONCE_SIZE..];
+                let nonce = <&[u8; GCM_NONCE_SIZE]>::try_from(&data[..GCM_NONCE_SIZE]).unwrap();
+                let ct_end = data.len() - GCM_TAG_SIZE;
+                let ciphertext = &data[GCM_NONCE_SIZE..ct_end];
+                let tag = <&[u8; GCM_TAG_SIZE]>::try_from(&data[ct_end..]).unwrap();
                 let key: Key<Aes256Gcm> = self.v2_key.unwrap().into();
                 let cipher = Aes256Gcm::new(&key);
                 let aad = aad(stream_num, offset);
-                let payload = Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                };
+                // Copy ciphertext into output once, then decrypt in place.
+                let mut out = ciphertext.to_vec();
                 cipher
-                    .decrypt(nonce.try_into().unwrap(), payload)
-                    .map_err(|e| anyhow::anyhow!("decryption failed: {e}"))
+                    .decrypt_inout_detached(nonce.into(), &aad, (&mut out[..]).into(), tag.into())
+                    .map_err(|e| anyhow::anyhow!("decryption failed: {e}"))?;
+                Ok(out)
             }
         }
     }
