@@ -186,7 +186,7 @@ impl ServerState {
             let mut to_close = Vec::new();
             for entry in &self.store {
                 let session = entry.value();
-                if session.last_accessed().elapsed() > DISCONNECTED_SESSION_EXPIRY {
+                if session.last_accessed_elapsed() > DISCONNECTED_SESSION_EXPIRY {
                     to_close.push(entry.key().clone());
                 }
             }
