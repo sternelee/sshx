@@ -7,7 +7,8 @@ use http::{header::CONTENT_TYPE, Request};
 use sshx_core::proto::sshx_service_server::SshxServiceServer;
 use tonic::service::Routes as TonicRoutes;
 use tower::{make::Shared, steer::Steer, ServiceExt};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::{grpc::GrpcServer, web, ServerState};
 
@@ -24,9 +25,20 @@ where
     L: Listener,
     L::Addr: Debug,
 {
+    // Per-request trace events at DEBUG so production INFO logs are not
+    // dominated by one line per WebSocket / gRPC request.
+    let http_trace = TraceLayer::new_for_http()
+        .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
+        .on_request(DefaultOnRequest::new().level(Level::DEBUG))
+        .on_response(DefaultOnResponse::new().level(Level::DEBUG));
+    let grpc_trace = TraceLayer::new_for_grpc()
+        .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
+        .on_request(DefaultOnRequest::new().level(Level::DEBUG))
+        .on_response(DefaultOnResponse::new().level(Level::DEBUG));
+
     let http_service = web::app()
         .with_state(state.clone())
-        .layer(TraceLayer::new_for_http())
+        .layer(http_trace)
         .into_service()
         .boxed_clone();
 
@@ -42,7 +54,7 @@ where
 
     let grpc_service = grpc_routes
         .into_axum_router()
-        .layer(TraceLayer::new_for_grpc())
+        .layer(grpc_trace)
         .into_service()
         // This type conversion is necessary because Tonic 0.12 uses Axum 0.7, so its `axum::Router`
         // and `axum::Body` are based on an older `axum_core` version.
