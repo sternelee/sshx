@@ -531,8 +531,8 @@
           <XTerm
             rows={ws.rows}
             cols={ws.cols}
-            bind:write={writers[id]}
-            bind:termEl={termElements[id]}
+            onregisterWrite={(fn) => { writers[id] = fn; }}
+            onregisterTermEl={(el) => { termElements[id] = el; }}
             oncellsize={({ charWidth, rowHeight }) => {
               termCharWidths[id] = charWidth;
               termRowHeights[id] = rowHeight;

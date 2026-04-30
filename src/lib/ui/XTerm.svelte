@@ -15,10 +15,7 @@
         try {
           await new FontFaceObserver("Fira Code VF").load();
         } catch (error) {
-          makeToast({
-            kind: "error",
-            message: "Could not load terminal font.",
-          });
+          makeToast({ kind: "error", message: "Could not load terminal font." });
         }
         state = "loaded";
         for (const fn of waitlist) fn();
@@ -42,18 +39,22 @@
   import CircleButtons from "./CircleButtons.svelte";
   import { settings } from "$lib/settings";
 
-  /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
 
+  /**
+   * Props — note: `write` and `termEl` are exposed via registration callbacks
+   * rather than $bindable because Svelte 5 throws props_invalid_value when a
+   * function is propagated back through a $bindable binding.
+   */
   let {
     rows,
     cols,
-    write = $bindable(),
-    termEl = $bindable<HTMLDivElement>(null as any),
     showTitleBar = true,
     visible = true,
-    charWidth = $bindable(0),
-    rowHeight = $bindable(0),
+    /** Called once during init with a stable write function. */
+    onregisterWrite,
+    /** Called once after the wterm container div is mounted. */
+    onregisterTermEl,
     ondata,
     onclose,
     onshrink,
@@ -67,15 +68,10 @@
   }: {
     rows: number;
     cols: number;
-    /** Bound write function — parent calls this to push data into the terminal. */
-    write?: (data: string) => void;
-    termEl?: HTMLDivElement;
-    /** When false, hides the title bar (used by TabbedTerminal). */
     showTitleBar?: boolean;
-    /** When false, hides this terminal (display:none). */
     visible?: boolean;
-    charWidth?: number;
-    rowHeight?: number;
+    onregisterWrite?: (fn: (data: string) => void) => void;
+    onregisterTermEl?: (el: HTMLDivElement) => void;
     ondata?: (data: Uint8Array) => void;
     onclose?: () => void;
     onshrink?: () => void;
@@ -89,6 +85,11 @@
   } = $props();
 
   let term: WTerm | null = null;
+  // Local state for the wterm container element.
+  let termEl = $state<HTMLDivElement>(null as any);
+  let charWidth = $state(0);
+  let rowHeight = $state(0);
+
   const theme = $derived(themes[$settings.theme]);
 
   $effect(() => {
@@ -100,6 +101,22 @@
   let currentTitle = $state("Remote Terminal");
   let _focusCleanup: (() => void) | null = null;
   const utf8 = new TextEncoder();
+
+  // Preload buffer: holds data arriving before the terminal is initialised.
+  const preloadBuffer: string[] = [];
+
+  // Register a stable write function with the parent immediately (synchronously).
+  // Using a registration callback avoids Svelte 5's props_invalid_value error
+  // that occurs when propagating a function through a $bindable prop.
+  onregisterWrite?.((data: string) => {
+    if (!term) preloadBuffer.push(data);
+    else term.write(data);
+  });
+
+  // Expose the wterm container element to the parent after it's mounted.
+  $effect(() => {
+    if (termEl) onregisterTermEl?.(termEl);
+  });
 
   function handleKeydown(event: KeyboardEvent) {
     if (!focused) return;
@@ -153,17 +170,6 @@
     onstartMove?.(event);
   }
 
-  const preloadBuffer: string[] = [];
-
-  // Expose write as a bindable function prop.
-  write = (data: string) => {
-    if (!term) {
-      preloadBuffer.push(data);
-    } else {
-      term.write(data);
-    }
-  };
-
   function measureCharSize() {
     if (!termEl) return;
     const grid = termEl.querySelector(".term-grid") as HTMLElement | null;
@@ -183,34 +189,24 @@
 
     const rowRect = row.getBoundingClientRect();
     const blockRect = block.getBoundingClientRect();
-    const measuredRowHeight = rowRect.height;
-    const measuredCharWidth = blockRect.width;
     row.remove();
 
-    if (measuredRowHeight >= 4 && measuredRowHeight <= 200) {
-      rowHeight = measuredRowHeight;
-    } else if (!rowHeight) {
-      rowHeight = 17;
-    }
-    if (measuredCharWidth >= 1 && measuredCharWidth <= 100) {
-      charWidth = measuredCharWidth;
-    } else if (!charWidth) {
-      charWidth = 9;
-    }
+    if (rowRect.height >= 4 && rowRect.height <= 200) rowHeight = rowRect.height;
+    else if (!rowHeight) rowHeight = 17;
+
+    if (blockRect.width >= 1 && blockRect.width <= 100) charWidth = blockRect.width;
+    else if (!charWidth) charWidth = 9;
 
     termEl.style.setProperty("--term-row-height", `${rowHeight}px`);
   }
 
   function updateSize(c: number, r: number) {
     if (!termEl || charWidth <= 0 || rowHeight <= 0) return;
-    if (!Number.isFinite(c) || !Number.isFinite(r)) return;
-    if (c < 1 || r < 1) return;
-    const padding = 12 * 2; // wterm .wterm padding: 12px
-    let w = Math.min(c * charWidth + padding, 3000);
-    let h = Math.min(r * rowHeight + padding, 4000);
+    if (!Number.isFinite(c) || !Number.isFinite(r) || c < 1 || r < 1) return;
+    const padding = 12 * 2;
     termEl.style.boxSizing = "border-box";
-    termEl.style.width = `${w}px`;
-    termEl.style.height = `${h}px`;
+    termEl.style.width = `${Math.min(c * charWidth + padding, 3000)}px`;
+    termEl.style.height = `${Math.min(r * rowHeight + padding, 4000)}px`;
   }
 
   $effect(() => {
@@ -228,9 +224,7 @@
       rows,
       cursorBlink: false,
       autoResize: false,
-      onData: (data: string) => {
-        ondata?.(utf8.encode(data));
-      },
+      onData: (data: string) => { ondata?.(utf8.encode(data)); },
       onTitle: (title: string) => {
         currentTitle = title;
         ontitle?.(title);
@@ -251,17 +245,11 @@
     oncellsize?.({ charWidth, rowHeight });
 
     const handleFocusIn = () => {
-      if (!focused) {
-        focused = true;
-        onfocus?.();
-      }
+      if (!focused) { focused = true; onfocus?.(); }
     };
     const handleFocusOut = (event: FocusEvent) => {
       if (!termEl.contains(event.relatedTarget as Node)) {
-        if (focused) {
-          focused = false;
-          onblur?.();
-        }
+        if (focused) { focused = false; onblur?.(); }
       }
     };
     termEl.addEventListener("focusin", handleFocusIn);
@@ -272,9 +260,7 @@
     };
 
     loaded = true;
-    for (const data of preloadBuffer) {
-      term.write(data);
-    }
+    for (const data of preloadBuffer) term.write(data);
   });
 
   onDestroy(() => {
@@ -291,9 +277,7 @@
   class:dragging={isDragging}
   style:background={theme.background}
   style:display={visible ? undefined : "none"}
-  onmousedown={() => {
-    if (!isDragging) onbringToFront?.();
-  }}
+  onmousedown={() => { if (!isDragging) onbringToFront?.(); }}
   onpointerdown={(event) => event.stopPropagation()}
   role="presentation"
 >
@@ -308,23 +292,12 @@
     >
       <div class="flex-1 flex items-center px-3">
         <CircleButtons>
-          <CircleButton
-            kind="red"
-            onmousedown={(event) => event.button === 0 && onclose?.()}
-          />
-          <CircleButton
-            kind="yellow"
-            onmousedown={(event) => event.button === 0 && onshrink?.()}
-          />
-          <CircleButton
-            kind="green"
-            onmousedown={(event) => event.button === 0 && onexpand?.()}
-          />
+          <CircleButton kind="red"    onmousedown={(e) => e.button === 0 && onclose?.()}  />
+          <CircleButton kind="yellow" onmousedown={(e) => e.button === 0 && onshrink?.()}  />
+          <CircleButton kind="green"  onmousedown={(e) => e.button === 0 && onexpand?.()}  />
         </CircleButtons>
       </div>
-      <div
-        class="p-2 text-sm text-zinc-300 text-center font-medium overflow-hidden whitespace-nowrap text-ellipsis w-0 flex-grow-[4]"
-      >
+      <div class="p-2 text-sm text-zinc-300 text-center font-medium overflow-hidden whitespace-nowrap text-ellipsis w-0 flex-grow-[4]">
         {currentTitle}
       </div>
       <div class="flex-1"></div>
@@ -347,19 +320,11 @@
     border-radius: 0.5rem;
     border: 1px solid rgb(63, 63, 70);
     opacity: 0.9;
-    transition:
-      transform 200ms,
-      opacity 200ms;
+    transition: transform 200ms, opacity 200ms;
   }
 
-  .term-container:not(.focused) :global(.wterm) {
-    cursor: default;
-  }
-
-  .term-container.focused {
-    opacity: 1;
-  }
-
+  .term-container:not(.focused) :global(.wterm) { cursor: default; }
+  .term-container.focused { opacity: 1; }
   .term-container.dragging {
     opacity: 0.85;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);

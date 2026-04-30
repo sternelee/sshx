@@ -642,8 +642,8 @@
             cols={sz.cols}
             showTitleBar={false}
             visible={inActive}
-            bind:write={writers[id]}
-            bind:termEl={termElements[id]}
+            onregisterWrite={(fn) => { writers[id] = fn; }}
+            onregisterTermEl={(el) => { termElements[id] = el; }}
             oncellsize={({ charWidth: cw, rowHeight: rh }) => {
               charWidth = cw;
               rowHeight = rh;
