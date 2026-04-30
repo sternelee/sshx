@@ -257,11 +257,21 @@
     oncellsize?.({ charWidth, rowHeight });
 
     const handleFocusIn = () => {
-      if (!focused) { focused = true; onfocus?.(); }
+      if (!focused) {
+        focused = true;
+        // Defer so we're not mutating external state while Svelte's effect
+        // runner is actively updating the DOM (e.g. switching pane visibility
+        // sets display:none which synchronously fires focusout, which would
+        // throw state_unsafe_mutation if onblur modifies parent $state).
+        queueMicrotask(() => onfocus?.());
+      }
     };
     const handleFocusOut = (event: FocusEvent) => {
-      if (!termEl.contains(event.relatedTarget as Node)) {
-        if (focused) { focused = false; onblur?.(); }
+      // Capture relatedTarget synchronously – it may become null after a tick.
+      const isInside = termEl.contains(event.relatedTarget as Node);
+      if (!isInside && focused) {
+        focused = false;
+        queueMicrotask(() => onblur?.());
       }
     };
     termEl.addEventListener("focusin", handleFocusIn);
