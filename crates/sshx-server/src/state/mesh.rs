@@ -123,6 +123,22 @@ impl StorageMesh {
         }
     }
 
+    /// Write a single owner+snapshot pair to Redis with the standard TTL.
+    ///
+    /// Used by both the periodic `background_sync` loop and the cold-tier
+    /// eviction path in `ServerState`. Returns Err on any Redis failure;
+    /// the caller decides whether to retry, log, or abort.
+    pub(crate) async fn write_snapshot(&self, name: &str, snapshot: Vec<u8>) -> Result<()> {
+        let mut conn = self.redis.get().await?;
+        let mut pipe = redis::pipe();
+        if let Some(host) = &self.host {
+            pipe.set_options(format!("session:{{{name}}}:owner"), host, set_opts());
+        }
+        pipe.set_options(format!("session:{{{name}}}:snapshot"), snapshot, set_opts());
+        pipe.query_async::<()>(&mut conn).await?;
+        Ok(())
+    }
+
     /// Periodically set the owner and snapshot of a session.
     pub async fn background_sync(&self, name: &str, session: Arc<Session>) {
         let mut interval = time::interval(STORAGE_SYNC_INTERVAL);
@@ -133,13 +149,6 @@ impl StorageMesh {
                 _ = session.sync_now_wait() => {}
                 _ = session.terminated() => break,
             }
-            let mut conn = match self.redis.get().await {
-                Ok(conn) => conn,
-                Err(err) => {
-                    error!(?err, "failed to connect to redis for sync");
-                    continue;
-                }
-            };
             let snapshot = match session.snapshot() {
                 Ok(snapshot) => snapshot,
                 Err(err) => {
@@ -147,14 +156,8 @@ impl StorageMesh {
                     continue;
                 }
             };
-            let mut pipe = redis::pipe();
-            if let Some(host) = &self.host {
-                pipe.set_options(format!("session:{{{name}}}:owner"), host, set_opts());
-            }
-            pipe.set_options(format!("session:{{{name}}}:snapshot"), snapshot, set_opts());
-            match pipe.query_async(&mut conn).await {
-                Ok(()) => {}
-                Err(err) => error!(?err, "failed to sync session {name}"),
+            if let Err(err) = self.write_snapshot(name, snapshot).await {
+                error!(?err, "failed to sync session {name}");
             }
         }
     }
