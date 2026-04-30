@@ -377,8 +377,8 @@ async fn test_cold_evict_and_thaw_via_websocket() -> Result<()> {
         Err(other) => panic!("expected thaw, got redirect/none: {other:?}"),
     };
 
-    // 4. Restored session has the original metadata (encrypted_zeros)
-    //    and at least the original shell registered.
+    // 4. Restored session has the original metadata (encrypted_zeros) and at least
+    //    the original shell registered.
     assert_eq!(
         restored.metadata().encrypted_zeros,
         session.metadata().encrypted_zeros,
