@@ -401,14 +401,29 @@
   }
 
   function handleTabResize(
-    event: CustomEvent<{ cols: number; rows: number }>,
+    event: CustomEvent<{ id: number; cols: number; rows: number }>,
   ) {
-    tabGroupCols = event.detail.cols;
-    tabGroupRows = event.detail.rows;
-    // Sync all shells to the new size so PTYs resize properly
-    for (const [id, ws] of shells) {
-      srocket?.send({ m: [id, { ...ws, rows: event.detail.rows, cols: event.detail.cols }] });
-    }
+    const { id, cols, rows } = event.detail;
+    // Track group cols/rows from the most recent active pane resize so that
+    // newly-created shells in tab mode start with sensible dimensions.
+    tabGroupCols = cols;
+    tabGroupRows = rows;
+    const target = shells.find(([sid]) => sid === id);
+    if (!target) return;
+    const [, ws] = target;
+    srocket?.send({ m: [id, { ...ws, rows, cols }] });
+  }
+
+  function handleSplitTab(
+    _event: CustomEvent<{
+      fromId: number;
+      pos: "right" | "left" | "up" | "down";
+    }>,
+  ) {
+    // Splitting just creates a new shell — TabbedTerminal places it next to
+    // the source pane via its internal layout tree once the shell appears in
+    // the `shells` prop.
+    handleCreate();
   }
 
   function handleTabData(event: CustomEvent<{ id: number; data: Uint8Array }>) {
@@ -769,6 +784,7 @@
         {hasWriteAccess}
         on:switchTab={({ detail: { id } }) => (activeTabId = id)}
         on:newTab={handleCreate}
+        on:splitTab={handleSplitTab}
         on:closeTab={({ detail: { id } }) => srocket?.send({ x: id })}
         on:resize={handleTabResize}
         on:data={handleTabData}
