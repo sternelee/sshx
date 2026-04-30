@@ -13,7 +13,7 @@ use sshx_core::{Sid, Uid};
 use sshx_server::{
     state::ServerState,
     web::protocol::{WsClient, WsServer, WsUser, WsWinsize},
-    Server,
+    Server, ServerOptions,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
@@ -32,10 +32,28 @@ impl TestServer {
     /// Returns an object with the local address, as well as a custom [`Drop`]
     /// implementation that gracefully shuts down the server.
     pub async fn new() -> Self {
+        Self::with_options(ServerOptions::default()).await
+    }
+
+    /// Like [`Self::new`] but routes through a Redis mesh.
+    ///
+    /// Returns `None` when `SSHX_TEST_REDIS_URL` is unset so the test can
+    /// gracefully skip on machines without a local Redis. CI must export
+    /// the env var (the docker-compose stack already binds Redis on
+    /// localhost:12601 — set
+    /// `SSHX_TEST_REDIS_URL=redis://127.0.0.1:12601` to enable).
+    pub async fn with_redis() -> Option<Self> {
+        let redis_url = std::env::var("SSHX_TEST_REDIS_URL").ok()?;
+        let mut options = ServerOptions::default();
+        options.redis_url = Some(redis_url);
+        Some(Self::with_options(options).await)
+    }
+
+    async fn with_options(options: ServerOptions) -> Self {
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
 
-        let server = Arc::new(Server::new(Default::default()).unwrap());
+        let server = Arc::new(Server::new(options).unwrap());
         {
             let server = Arc::clone(&server);
             let listener = listener.tap_io(|tcp_stream| {

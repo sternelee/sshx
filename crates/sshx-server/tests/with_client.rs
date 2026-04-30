@@ -328,3 +328,128 @@ async fn test_grpc_active_counter_tracks_stream() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------- cold-tier integration ----------
+//
+// These tests require a Redis instance reachable via SSHX_TEST_REDIS_URL.
+// When the env var is unset they skip silently so `cargo test` works on
+// machines without docker-compose up.
+
+#[tokio::test]
+async fn test_cold_evict_and_thaw_via_websocket() -> Result<()> {
+    let Some(server) = TestServer::with_redis().await else {
+        return Ok(());
+    };
+
+    // 1. CLI connects and registers a shell so the snapshot has content.
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_string();
+    let session = server
+        .state()
+        .lookup(&name)
+        .context("hot session missing")?;
+
+    // Drive the controller briefly so background_sync registers, then
+    // shut down the controller's gRPC stream (Channel will exit).
+    let run_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = controller.run() => (),
+            _ = time::sleep(Duration::from_millis(300)) => (),
+        }
+        controller.close().await.ok();
+    });
+    time::sleep(Duration::from_millis(400)).await;
+
+    // 2. Inline evict (skip the 60 s sweeper interval).
+    server.state().evict_to_cold(&name, &session).await?;
+    server.state().remove(&name);
+    run_handle.await.ok();
+
+    assert!(
+        server.state().lookup(&name).is_none(),
+        "hot map should be empty after evict + remove"
+    );
+
+    // 3. WebSocket-side reconnect must thaw from Redis.
+    let result = server.state().frontend_connect(&name).await?;
+    let restored = match result {
+        Ok(s) => s,
+        Err(other) => panic!("expected thaw, got redirect/none: {other:?}"),
+    };
+
+    // 4. Restored session has the original metadata (encrypted_zeros)
+    //    and at least the original shell registered.
+    assert_eq!(
+        restored.metadata().encrypted_zeros,
+        session.metadata().encrypted_zeros,
+        "encrypted_zeros must round-trip"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cold_does_not_evict_with_active_grpc() -> Result<()> {
+    let Some(server) = TestServer::with_redis().await else {
+        return Ok(());
+    };
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_string();
+
+    let run_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = controller.run() => (),
+            _ = time::sleep(Duration::from_secs(2)) => (),
+        }
+        controller.close().await.ok();
+    });
+    time::sleep(Duration::from_millis(300)).await;
+
+    let session = server.state().lookup(&name).context("hot")?;
+    assert!(
+        session.has_active_grpc(),
+        "active gRPC stream means sweeper must skip eviction"
+    );
+    assert_eq!(
+        session.user_count(),
+        0,
+        "viewer count starts at 0 (no WebSocket connected)"
+    );
+    server.state().close_session(&name).await?;
+    run_handle.await.ok();
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cold_redirect_when_other_owner() -> Result<()> {
+    let Some(server) = TestServer::with_redis().await else {
+        return Ok(());
+    };
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+    let name = controller.name().to_string();
+    let session = server.state().lookup(&name).context("hot")?;
+
+    let run_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = controller.run() => (),
+            _ = time::sleep(Duration::from_millis(300)) => (),
+        }
+        controller.close().await.ok();
+    });
+    time::sleep(Duration::from_millis(400)).await;
+
+    // Cold-evict, then overwrite owner to point elsewhere.
+    server.state().evict_to_cold(&name, &session).await?;
+    server.state().remove(&name);
+    run_handle.await.ok();
+
+    let state = server.state();
+    let mesh = state.mesh().expect("mesh enabled with redis");
+    mesh.debug_set_owner(&name, "other-host:1234").await?;
+
+    let result = server.state().frontend_connect(&name).await?;
+    match result {
+        Err(Some(host)) => assert_eq!(host, "other-host:1234"),
+        other => panic!("expected redirect to other-host, got {other:?}"),
+    }
+    Ok(())
+}

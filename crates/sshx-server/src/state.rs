@@ -103,6 +103,15 @@ impl ServerState {
         self.store.get(name).map(|s| s.clone())
     }
 
+    /// Borrow the storage mesh, if enabled.
+    ///
+    /// Exposed primarily for cold-tier integration tests that need to seed
+    /// or inspect Redis state directly. Production code should rely on
+    /// `backend_connect` / `frontend_connect` / `evict_to_cold` instead.
+    pub fn mesh(&self) -> Option<&StorageMesh> {
+        self.mesh.as_ref()
+    }
+
     /// Insert a session into the local store.
     pub fn insert(&self, name: &str, session: Arc<Session>) {
         if let Some(mesh) = &self.mesh {
@@ -146,8 +155,9 @@ impl ServerState {
     /// closed. Used by the cold-tier sweeper to evict an idle session
     /// while keeping its state recoverable from the mesh snapshot.
     ///
-    /// Errors when mesh is disabled or Redis fails.
-    async fn evict_to_cold(&self, name: &str, session: &Arc<Session>) -> Result<()> {
+    /// Errors when mesh is disabled or Redis fails. Public so tests can
+    /// trigger eviction inline without waiting for the sweeper interval.
+    pub async fn evict_to_cold(&self, name: &str, session: &Arc<Session>) -> Result<()> {
         let mesh = self.mesh.as_ref().context("mesh disabled")?;
         let snapshot = session.snapshot()?;
         mesh.write_snapshot(name, snapshot).await?;
