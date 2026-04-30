@@ -1,7 +1,7 @@
 //! Core logic for sshx sessions, independent of message transport.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -108,6 +108,13 @@ pub struct Session {
 
     /// Set when this session has been closed and removed.
     shutdown: Shutdown,
+
+    /// Number of currently-open gRPC `Channel` streams from CLI clients.
+    ///
+    /// Incremented on stream entry, decremented on stream exit via the
+    /// RAII guard returned by `grpc_scope()`. Read by the cold-tier
+    /// sweeper to decide whether a session is safe to evict.
+    grpc_active: AtomicU32,
 }
 
 /// Internal state for each shell.
@@ -155,6 +162,7 @@ impl Session {
             update_rx,
             sync_notify: Notify::new(),
             shutdown: Shutdown::new(),
+            grpc_active: AtomicU32::new(0),
         }
     }
 
@@ -476,6 +484,28 @@ impl Session {
         Duration::from_millis(now_ms.saturating_sub(last_ms))
     }
 
+    /// Number of currently-connected viewers (browser users).
+    pub fn user_count(&self) -> usize {
+        self.users.read().len()
+    }
+
+    /// Whether at least one CLI gRPC `Channel` stream is open.
+    pub fn has_active_grpc(&self) -> bool {
+        self.grpc_active.load(Ordering::Relaxed) > 0
+    }
+
+    /// Increment the gRPC active counter; the returned guard decrements it on drop.
+    ///
+    /// Wrap the body of the gRPC `Channel` handler with this so the
+    /// cold-tier sweeper can tell when a session is idle on the CLI side.
+    pub fn grpc_scope(self: &Arc<Self>) -> impl Drop {
+        self.grpc_active.fetch_add(1, Ordering::Relaxed);
+        let s = self.clone();
+        scopeguard::guard((), move |_| {
+            s.grpc_active.fetch_sub(1, Ordering::Relaxed);
+        })
+    }
+
     /// Access the sender of the client message channel for this session.
     pub fn update_tx(&self) -> &async_channel::Sender<ServerMessage> {
         &self.update_tx
@@ -513,5 +543,39 @@ impl Session {
     /// Resolves when the session has received a shutdown signal.
     pub async fn terminated(&self) {
         self.shutdown.wait().await
+    }
+}
+
+#[cfg(test)]
+mod cold_accessors_tests {
+    use super::*;
+
+    fn fresh() -> Session {
+        Session::new(Metadata {
+            encrypted_zeros: bytes::Bytes::from_static(&[0u8; 16]),
+            name: "t".into(),
+            write_password_hash: None,
+        })
+    }
+
+    #[test]
+    fn user_count_default_zero() {
+        assert_eq!(fresh().user_count(), 0);
+    }
+
+    #[test]
+    fn has_active_grpc_default_false() {
+        assert!(!fresh().has_active_grpc());
+    }
+
+    #[test]
+    fn grpc_scope_increments_and_drops() {
+        let s = Arc::new(fresh());
+        assert!(!s.has_active_grpc());
+        {
+            let _g = s.grpc_scope();
+            assert!(s.has_active_grpc());
+        }
+        assert!(!s.has_active_grpc());
     }
 }
