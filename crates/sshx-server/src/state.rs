@@ -176,7 +176,12 @@ impl ServerState {
         Ok(None)
     }
 
-    /// Connect to a session from a web browser frontend, possibly redirecting.
+    /// Connect to a session from a web browser frontend, possibly
+    /// redirecting or thawing.
+    ///
+    /// Returns `Ok(Ok(session))` if a hot or thawed session is available,
+    /// `Ok(Err(Some(host)))` to redirect to a different mesh node, or
+    /// `Ok(Err(None))` if the session is gone.
     pub async fn frontend_connect(
         &self,
         name: &str,
@@ -186,11 +191,28 @@ impl ServerState {
         }
 
         if let Some(mesh) = &self.mesh {
-            let mut owner = mesh.get_owner(name).await?;
-            if owner.is_some() && owner.as_deref() == mesh.host() {
-                // Do not redirect back to the same server.
-                owner = None;
+            let (owner, snapshot) = mesh.get_owner_snapshot(name).await?;
+
+            // Owner is us-or-unset means this node should serve. If we
+            // have a snapshot it must have been cold-evicted earlier on
+            // this host (or a peer that wrote owner=us during transfer);
+            // thaw it back to the hot map.
+            let owner_is_us = owner.is_none() || owner.as_deref() == mesh.host();
+
+            if owner_is_us {
+                if let Some(snapshot) = snapshot {
+                    let session = Arc::new(Session::restore(&snapshot)?);
+                    // ServerState::insert handles the concurrent-thaw race:
+                    // a parallel insert finds the existing entry and
+                    // shuts down the loser via prev_session.shutdown().
+                    self.insert(name, session.clone());
+                    info!(name, "session thawed from cold tier");
+                    return Ok(Ok(session));
+                }
+                return Ok(Err(None));
             }
+
+            // Different owner: redirect (existing behavior).
             return Ok(Err(owner));
         }
 
