@@ -29,6 +29,11 @@
      * so registration must be bubbled up to the prop owner.
      */
     onregisterShellWrite,
+    /**
+     * Session ID used as the localStorage key for persisting the tab layout
+     * across page refreshes. Optional — persistence is disabled when absent.
+     */
+    sessionId,
   }: {
     /** Server-authoritative list of all shells. */
     shells: [number, WsWinsize][];
@@ -53,6 +58,7 @@
     onfocus?: (detail: { id: number }) => void;
     onblur?: (detail: { id: number }) => void;
     onregisterShellWrite?: (id: number, fn: (data: string) => void) => void;
+    sessionId?: string;
   } = $props();
 
   // TabbedTerminal owns this record — plain object (not $state, not prop) so
@@ -536,7 +542,7 @@
             onmousedown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
-              for (const [id] of shells) oncloseTab?.({ id });
+              if (activePaneId >= 0) oncloseTab?.({ id: activePaneId });
             }}
           />
           <CircleButton
@@ -589,7 +595,11 @@
                 e.stopPropagation();
                 if (e.button !== 0) return;
                 e.preventDefault();
-                for (const id of ids) oncloseTab?.({ id });
+                // Close only the active pane in this group (if it belongs here),
+                // otherwise close the first pane.
+                const target = ids.has(activePaneId) ? activePaneId
+                  : (ids.values().next().value as number);
+                oncloseTab?.({ id: target });
               }}
             >×</span>
           </button>
