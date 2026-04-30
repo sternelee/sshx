@@ -530,7 +530,8 @@ impl Session {
         self.grpc_active.load(Ordering::Relaxed) > 0
     }
 
-    /// Increment the gRPC active counter; the returned guard decrements it on drop.
+    /// Increment the gRPC active counter; the returned guard decrements it on
+    /// drop.
     ///
     /// Wrap the body of the gRPC `Channel` handler with this so the
     /// cold-tier sweeper can tell when a session is idle on the CLI side.
