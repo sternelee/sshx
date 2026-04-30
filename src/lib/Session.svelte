@@ -563,17 +563,19 @@
             onclose={() => srocket?.send({ x: id })}
             onshrink={() => {
               if (!hasWriteAccess) return;
-              const rows = Math.max(Math.min(ws.rows - 4, TERM_MAX_ROWS), TERM_MIN_ROWS);
-              const cols = Math.max(Math.min(ws.cols - 10, TERM_MAX_COLS), TERM_MIN_COLS);
-              if (rows !== ws.rows || cols !== ws.cols) {
-                srocket?.send({ m: [id, { ...ws, rows, cols }] });
+              // Use winsize (per-iteration loop var) not ws ({@const} may be shared
+              // across iterations in Svelte 5 runes when it depends on external $state).
+              const rows = Math.max(Math.min(winsize.rows - 4, TERM_MAX_ROWS), TERM_MIN_ROWS);
+              const cols = Math.max(Math.min(winsize.cols - 10, TERM_MAX_COLS), TERM_MIN_COLS);
+              if (rows !== winsize.rows || cols !== winsize.cols) {
+                srocket?.send({ m: [id, { x: winsize.x, y: winsize.y, rows, cols }] });
               }
             }}
             onexpand={() => {
               if (!hasWriteAccess) return;
-              const rows = Math.min(ws.rows + 4, TERM_MAX_ROWS);
-              const cols = Math.min(ws.cols + 10, TERM_MAX_COLS);
-              srocket?.send({ m: [id, { ...ws, rows, cols }] });
+              const rows = Math.min(winsize.rows + 4, TERM_MAX_ROWS);
+              const cols = Math.min(winsize.cols + 10, TERM_MAX_COLS);
+              srocket?.send({ m: [id, { x: winsize.x, y: winsize.y, rows, cols }] });
             }}
             onbringToFront={() => {
               if (!hasWriteAccess) return;
@@ -584,7 +586,10 @@
               if (!hasWriteAccess) return;
               if (event.type === "pointerdown") {
                 const [x, y] = normalizePosition(event);
-                movingSize = ws;
+                // Snapshot winsize into a plain object so movingSize is never a
+                // reactive proxy — reactive proxies stored in $state can cause
+                // unexpected cross-terminal updates.
+                movingSize = { x: winsize.x, y: winsize.y, rows: winsize.rows, cols: winsize.cols };
                 moving = id;
                 movingPointerId = event.pointerId;
                 movingOrigin = [x - movingSize.x, y - movingSize.y];
@@ -631,9 +636,10 @@
                 resizing = id;
                 resizingPointerId = event.pointerId;
                 (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-                resizingOrigin = [event.pageX - ws.cols * cw, event.pageY - ws.rows * rh];
+                // Snapshot winsize to plain object — same reason as onstartMove above.
+                resizingOrigin = [event.pageX - winsize.cols * cw, event.pageY - winsize.rows * rh];
                 resizingCell = [cw, rh];
-                resizingSize = ws;
+                resizingSize = { x: winsize.x, y: winsize.y, rows: winsize.rows, cols: winsize.cols };
               }
             }}
             onpointerup={(event) => {
