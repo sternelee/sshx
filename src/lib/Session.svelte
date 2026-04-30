@@ -347,6 +347,28 @@
       tabGroupX = firstWinsize.x;
       tabGroupY = firstWinsize.y;
       activeTabId = shells[shells.length - 1][0];
+    } else if (mode === "canvas" && shells.length > 0) {
+      // In tab mode every shell is sent to the same (tabGroupX, tabGroupY)
+      // position, so switching back to canvas causes all terminals to stack.
+      // Detect any position overlap and re-arrange all shells so they're
+      // spread out and individually selectable.
+      const positions = shells.map(([, ws]) => `${ws.x},${ws.y}`);
+      const hasOverlap = new Set(positions).size < shells.length;
+      if (hasOverlap) {
+        const placed: { x: number; y: number; width: number; height: number }[] = [];
+        for (const [id, ws] of shells) {
+          const { x, y } = arrangeNewTerminal(placed);
+          placed.push({ x, y, width: 752, height: 515 });
+          srocket?.send({ m: [id, { x, y, rows: ws.rows, cols: ws.cols }] });
+        }
+        if (placed.length > 0) {
+          touchZoom.moveTo([placed[0].x, placed[0].y], INITIAL_ZOOM);
+        }
+      } else if (shells.length > 0) {
+        // Positions are unique — just move the view to the first terminal.
+        const [, ws] = shells[0];
+        touchZoom.moveTo([ws.x, ws.y], INITIAL_ZOOM);
+      }
     }
   }
 
