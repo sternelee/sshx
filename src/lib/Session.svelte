@@ -3,6 +3,7 @@
     onDestroy,
     onMount,
     tick,
+    untrack,
   } from "svelte";
   import { fade } from "svelte/transition";
   import { debounce, throttle } from "./utils";
@@ -88,7 +89,7 @@
   }
 
   let encrypt: Encrypt;
-  let srocket = $state<Srocket<WsServer, WsClient> | null>(null);
+  let srocket: Srocket<WsServer, WsClient> | null = null;
 
   let connected = $state(false);
   let exitReason = $state<string | null>(null);
@@ -125,10 +126,12 @@
     users.find(([uid]) => uid === userId)?.[1]?.canWrite,
   );
 
-  // Ensure activeTabId stays valid when shells change in tab mode
+  // Ensure activeTabId stays valid when shells change in tab mode.
+  // Read activeTabId with untrack so writing it doesn't retrigger this effect.
   $effect(() => {
     if (layoutMode === "tabs" && shells.length > 0) {
-      if (!shells.find(([sid]) => sid === activeTabId)) {
+      const cur = untrack(() => activeTabId);
+      if (!shells.find(([sid]) => sid === cur)) {
         activeTabId = shells[shells.length - 1][0];
       }
     }
@@ -303,8 +306,10 @@
       : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
   }
 
+  // Sync name setting to server. Use untrack for srocket to avoid this
+  // effect re-running every time the socket reconnects.
   $effect(() => {
-    if ($settings.name) srocket?.send({ n: $settings.name });
+    if ($settings.name) untrack(() => srocket)?.send({ n: $settings.name });
   });
 
   let counter = 0n;
@@ -371,26 +376,8 @@
     srocket?.send({ d: [id, encrypted, offset] });
   }
 
-  // Preserve input focus across reactive DOM updates that might move elements.
-  // In runes mode beforeUpdate/afterUpdate are not available; we instead use
-  // a tick-based effect that restores the active element after each render.
-  let _savedFocus: HTMLElement | null = null;
-  $effect(() => {
-    // Reading any reactive state here is intentional — the effect runs after
-    // every render, which is the closest equivalent to afterUpdate.
-    shells; users; layoutMode;
-    const saved = _savedFocus;
-    if (saved && document.activeElement !== saved) {
-      saved.focus();
-    }
-    _savedFocus = null;
-  });
-
-  function saveFocus() {
-    if (document.activeElement instanceof HTMLElement) {
-      _savedFocus = document.activeElement;
-    }
-  }
+  // Drop the focus-preservation shim — beforeUpdate/afterUpdate pattern
+  // is not reliable in runes mode; wterm handles its own focus internally.
 
   onMount(() => {
     function handlePointer(event: PointerEvent) {

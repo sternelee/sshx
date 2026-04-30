@@ -1,6 +1,7 @@
 <!-- @component Tabbed terminal window with tiling split panes (right/left/up/down). -->
 <script lang="ts">
   import { fade } from "svelte/transition";
+  import { untrack } from "svelte";
   import type { WsWinsize } from "$lib/protocol";
   import XTerm from "./XTerm.svelte";
   import CircleButtons from "./CircleButtons.svelte";
@@ -204,8 +205,13 @@
     }
   }
 
-  // Sync on shells change
-  $effect(() => { syncGroups(shells); });
+  // Sync on shells change — wrap in untrack so reads/writes inside
+  // syncGroups (groups, pendingSplit, …) don't register as dependencies
+  // of this effect and cause an infinite loop.
+  $effect(() => {
+    const currentShells = shells;
+    untrack(() => syncGroups(currentShells));
+  });
 
   // External activeTabId → align internal active group/pane
   $effect(() => {
@@ -237,8 +243,10 @@
   let tabTitles = $state<Record<number, string>>({});
 
   $effect(() => {
+    // Use untrack to read tabTitles so writes don't retrigger this effect.
+    const current = untrack(() => tabTitles);
     for (const [id] of shells) {
-      if (!(id in tabTitles)) tabTitles[id] = "Terminal";
+      if (!(id in current)) tabTitles[id] = "Terminal";
     }
   });
 
@@ -368,6 +376,9 @@
   $effect(() => {
     if (charWidth <= 0 || rowHeight <= 0) return;
     const next: Record<number, { cols: number; rows: number }> = {};
+    // Read previous sizes without tracking so the write below doesn't loop.
+    const prev = untrack(() => paneSizes);
+    let changed = false;
     for (const idStr in paneRects) {
       const id = +idStr;
       const r = paneRects[id];
@@ -376,12 +387,17 @@
       const c = clamp(Math.floor(innerW / charWidth), TERM_MIN_COLS, TERM_MAX_COLS);
       const rr = clamp(Math.floor(innerH / rowHeight), TERM_MIN_ROWS, TERM_MAX_ROWS);
       next[id] = { cols: c, rows: rr };
-      const prev = paneSizes[id];
-      if (!prev || prev.cols !== c || prev.rows !== rr) {
+      const p = prev[id];
+      if (!p || p.cols !== c || p.rows !== rr) {
+        changed = true;
         onresize?.({ id, cols: c, rows: rr });
       }
     }
-    paneSizes = next;
+    // Only reassign when something actually changed to avoid a reactive loop
+    // caused by a new object reference triggering this effect again.
+    if (changed || Object.keys(next).length !== Object.keys(prev).length) {
+      paneSizes = next;
+    }
   });
 
   // ---------------------------------------------------------------------------
