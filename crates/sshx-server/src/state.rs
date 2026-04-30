@@ -4,7 +4,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashMap;
 use hmac::{Hmac, KeyInit};
 use sha2::Sha256;
@@ -123,6 +123,19 @@ impl ServerState {
         if let Some(mesh) = &self.mesh {
             mesh.mark_closed(name).await?;
         }
+        Ok(())
+    }
+
+    /// Snapshot the session and write it to Redis, **without** marking it
+    /// closed. Used by the cold-tier sweeper to evict an idle session
+    /// while keeping its state recoverable from the mesh snapshot.
+    ///
+    /// Errors when mesh is disabled or Redis fails.
+    #[allow(dead_code)] // wired into close_old_sessions in the next commit
+    async fn evict_to_cold(&self, name: &str, session: &Arc<Session>) -> Result<()> {
+        let mesh = self.mesh.as_ref().context("mesh disabled")?;
+        let snapshot = session.snapshot()?;
+        mesh.write_snapshot(name, snapshot).await?;
         Ok(())
     }
 
