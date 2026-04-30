@@ -11,8 +11,6 @@
     shells,
     activeTabId,
     toolbarBottom = 96,
-    writers,
-    termElements,
     hasWriteAccess,
     connected = false,
     onswitchTab,
@@ -24,6 +22,13 @@
     onbringToFront,
     onfocus,
     onblur,
+    /**
+     * Called by XTerm children when their write function is ready.
+     * Session.svelte uses this to populate its writers record.
+     * We cannot mutate a prop object in Svelte 5 runes mode (state_unsafe_mutation),
+     * so registration must be bubbled up to the prop owner.
+     */
+    onregisterShellWrite,
   }: {
     /** Server-authoritative list of all shells. */
     shells: [number, WsWinsize][];
@@ -31,10 +36,6 @@
     activeTabId: number;
     /** Pixel distance from the top of the viewport where this overlay starts. */
     toolbarBottom?: number;
-    /** Shared writers record from Session — XTerm binds into this object. */
-    writers: Record<number, (data: string) => void>;
-    /** Shared termElements record from Session. */
-    termElements: Record<number, HTMLDivElement>;
     /** Whether the user has write access. */
     hasWriteAccess: boolean | undefined;
     /** Whether the WebSocket is currently connected. */
@@ -51,7 +52,13 @@
     onbringToFront?: () => void;
     onfocus?: (detail: { id: number }) => void;
     onblur?: (detail: { id: number }) => void;
+    onregisterShellWrite?: (id: number, fn: (data: string) => void) => void;
   } = $props();
+
+  // TabbedTerminal owns this record — plain object (not $state, not prop) so
+  // XTerm registration callbacks can write into it without triggering
+  // state_unsafe_mutation.
+  const termEls: Record<number, HTMLDivElement> = {};
 
   const TERM_MIN_ROWS = 8;
   const TERM_MIN_COLS = 32;
@@ -280,7 +287,7 @@
     const id = activePaneId;
     if (id > 0) {
       requestAnimationFrame(() => {
-        const el = termElements[id];
+        const el = termEls[id];
         if (!el) return;
         const focusable = el.querySelector<HTMLElement>('textarea, [tabindex="0"]');
         focusable?.focus();
@@ -642,8 +649,8 @@
             cols={sz.cols}
             showTitleBar={false}
             visible={inActive}
-            onregisterWrite={(fn) => { writers[id] = fn; }}
-            onregisterTermEl={(el) => { termElements[id] = el; }}
+            onregisterWrite={(fn) => onregisterShellWrite?.(id, fn)}
+            onregisterTermEl={(el) => { termEls[id] = el; }}
             oncellsize={({ charWidth: cw, rowHeight: rh }) => {
               charWidth = cw;
               rowHeight = rh;

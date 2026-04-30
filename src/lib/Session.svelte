@@ -637,8 +637,6 @@
         {activeTabId}
         {toolbarBottom}
         {connected}
-        {writers}
-        {termElements}
         {hasWriteAccess}
         onswitchTab={({ id }) => (activeTabId = id)}
         onnewTab={handleCreate}
@@ -649,6 +647,7 @@
         onbringToFront={() => (showNetworkInfo = false)}
         onfocus={({ id }) => { if (hasWriteAccess) focused = [...focused, id]; }}
         onblur={({ id }) => { focused = focused.filter((i) => i !== id); }}
+        onregisterShellWrite={(id, fn) => { writers[id] = fn; }}
       />
     {/if}
 
