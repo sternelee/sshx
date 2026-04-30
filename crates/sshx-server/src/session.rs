@@ -29,7 +29,7 @@ mod snapshot;
 /// (parsed as a `u64`, in bytes) to trade memory for replay history. Larger
 /// values let new viewers reconstruct more scrollback before requesting
 /// resyncs but multiply per-shell memory usage proportionally.
-static SHELL_STORED_BYTES: LazyLock<u64> = LazyLock::new(|| {
+pub(crate) static SHELL_STORED_BYTES: LazyLock<u64> = LazyLock::new(|| {
     std::env::var("SSHX_SHELL_STORED_BYTES")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
