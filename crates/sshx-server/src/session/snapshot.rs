@@ -15,9 +15,19 @@ use super::{Metadata, Session, State};
 use crate::web::protocol::WsWinsize;
 
 /// Persist at most this many bytes of output in storage, per shell.
-const SHELL_SNAPSHOT_BYTES: u64 = 1 << 15; // 32 KiB
+///
+/// Tied to the in-memory rolling buffer cap so a cold-tier round-trip
+/// preserves the same scrollback users see when the session is hot.
+fn shell_snapshot_bytes() -> u64 {
+    *crate::session::SHELL_STORED_BYTES
+}
 
-const MAX_SNAPSHOT_SIZE: usize = 1 << 22; // 4 MiB
+/// Hard cap on the encoded snapshot size before zstd compression.
+///
+/// Sized for ~16 shells × 2 MiB plus protobuf framing overhead. Real
+/// blobs are far smaller after zstd-3 (typical 4-10× ratio on terminal
+/// output) but we leave headroom for pathological pre-compression input.
+const MAX_SNAPSHOT_SIZE: usize = 64 << 20; // 64 MiB
 
 impl Session {
     /// Snapshot the session, returning a compressed representation.
@@ -41,7 +51,7 @@ impl Session {
                     let mut byte_offset = shell.byte_offset;
 
                     for i in 0..shell.data.len() {
-                        if shell.seqnum - byte_offset > SHELL_SNAPSHOT_BYTES {
+                        if shell.seqnum - byte_offset > shell_snapshot_bytes() {
                             prefix += 1;
                             chunk_offset += 1;
                             byte_offset += shell.data[i].len() as u64;
@@ -120,5 +130,40 @@ impl Session {
             .set_current_values(Sid(message.next_sid), Uid(message.next_uid));
 
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use crate::session::{Metadata, Session};
+
+    #[test]
+    fn snapshot_preserves_full_rolling_buffer() {
+        let session = Session::new(Metadata {
+            encrypted_zeros: Bytes::from_static(&[0u8; 16]),
+            name: "test".into(),
+            write_password_hash: None,
+        });
+        let sid = session.counter().next_sid();
+        session.add_shell(sid, (0, 0)).unwrap();
+
+        // 1 MiB of unique chunks so compression cannot collapse them.
+        let chunk = vec![0xABu8; 4096];
+        for i in 0..256u64 {
+            let mut buf = chunk.clone();
+            buf[0..8].copy_from_slice(&i.to_le_bytes());
+            session.add_data(sid, Bytes::from(buf), i * 4096).unwrap();
+        }
+
+        let blob = session.snapshot().expect("snapshot");
+        let restored = Session::restore(&blob).expect("restore");
+
+        // Snapshot must retain the full 1 MiB written above (well above 32 KiB).
+        let shells = restored.shells.read();
+        let shell = shells.get(&sid).unwrap().lock();
+        let total: usize = shell.data.iter().map(|b| b.len()).sum();
+        assert!(total >= 1 << 20, "expected >= 1 MiB retained, got {total}");
     }
 }
