@@ -651,6 +651,7 @@
             rows={sz.rows}
             cols={sz.cols}
             showTitleBar={false}
+            fillParent={true}
             visible={inActive}
             onregisterWrite={(fn) => onregisterShellWrite?.(id, fn)}
             onregisterTermEl={(el) => { termEls[id] = el; }}

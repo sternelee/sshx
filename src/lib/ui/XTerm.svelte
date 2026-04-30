@@ -51,6 +51,7 @@
     cols,
     showTitleBar = true,
     visible = true,
+    fillParent = false,
     /** Called once during init with a stable write function. */
     onregisterWrite,
     /** Called once after the wterm container div is mounted. */
@@ -70,6 +71,10 @@
     cols: number;
     showTitleBar?: boolean;
     visible?: boolean;
+    /** When true the wterm container fills its CSS parent instead of using
+     *  exact pixel dimensions. Use in split-pane mode where .term-container
+     *  is already positioned to fill the pane via CSS. */
+    fillParent?: boolean;
     onregisterWrite?: (fn: (data: string) => void) => void;
     onregisterTermEl?: (el: HTMLDivElement) => void;
     ondata?: (data: Uint8Array) => void;
@@ -203,10 +208,17 @@
   function updateSize(c: number, r: number) {
     if (!termEl || charWidth <= 0 || rowHeight <= 0) return;
     if (!Number.isFinite(c) || !Number.isFinite(r) || c < 1 || r < 1) return;
-    const padding = 12 * 2;
     termEl.style.boxSizing = "border-box";
-    termEl.style.width = `${Math.min(c * charWidth + padding, 3000)}px`;
-    termEl.style.height = `${Math.min(r * rowHeight + padding, 4000)}px`;
+    if (fillParent) {
+      // Let CSS control dimensions (parent is position:absolute; inset:0).
+      // wterm grid renders at top-left; extra space shows as terminal bg.
+      termEl.style.width = "100%";
+      termEl.style.height = "100%";
+    } else {
+      const padding = 12 * 2;
+      termEl.style.width = `${Math.min(c * charWidth + padding, 3000)}px`;
+      termEl.style.height = `${Math.min(r * rowHeight + padding, 4000)}px`;
+    }
   }
 
   $effect(() => {
