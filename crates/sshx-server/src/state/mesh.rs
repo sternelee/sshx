@@ -139,6 +139,21 @@ impl StorageMesh {
         Ok(())
     }
 
+    /// Overwrite the `session:{name}:owner` Redis key for tests.
+    ///
+    /// Allows cold-tier integration tests to simulate ownership being
+    /// taken over by a different mesh node, exercising the redirect path
+    /// in `frontend_connect`. Not intended for production use.
+    pub async fn debug_set_owner(&self, name: &str, owner: &str) -> Result<()> {
+        let mut conn = self.redis.get().await?;
+        redis::cmd("SET")
+            .arg(format!("session:{{{name}}}:owner"))
+            .arg(owner)
+            .query_async::<()>(&mut conn)
+            .await?;
+        Ok(())
+    }
+
     /// Periodically set the owner and snapshot of a session.
     pub async fn background_sync(&self, name: &str, session: Arc<Session>) {
         let mut interval = time::interval(STORAGE_SYNC_INTERVAL);
