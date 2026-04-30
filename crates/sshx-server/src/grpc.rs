@@ -96,8 +96,14 @@ impl SshxService for GrpcServer {
         // We now spawn an asynchronous task that sends updates to the client. Note that
         // when this task finishes, the sender end is dropped, so the receiver is
         // automatically closed.
+        //
+        // The grpc_scope guard is moved into the spawned task so the
+        // active-stream counter on `session` accurately reflects the
+        // lifetime of the streaming task, not just this function's body.
         let (tx, rx) = mpsc::channel(256);
+        let guard = session.grpc_scope();
         tokio::spawn(async move {
+            let _g = guard;
             if let Err(err) = handle_streaming(&tx, &session, stream).await {
                 warn!(?err, "connection exiting early due to an error");
             }

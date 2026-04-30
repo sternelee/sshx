@@ -283,3 +283,48 @@ async fn test_read_write_permissions() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_grpc_active_counter_tracks_stream() -> Result<()> {
+    let server = TestServer::new().await;
+    let mut controller = Controller::new(&server.endpoint(), "", Runner::Echo, false).await?;
+
+    // Spawn the run loop so the gRPC `Channel` stream is actually opened
+    // (Controller::new only completes the Open RPC; the bidirectional
+    // stream is established inside run()).
+    let session = server
+        .state()
+        .lookup(controller.name())
+        .context("couldn't find session in server state")?;
+    let name = controller.name().to_string();
+
+    let run_handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = controller.run() => (),
+            _ = time::sleep(Duration::from_secs(5)) => (),
+        }
+        controller.close().await.ok();
+    });
+
+    // Allow the Channel stream to register.
+    time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        session.has_active_grpc(),
+        "expected active grpc after CLI connect ({name})"
+    );
+
+    // Drop run handle to terminate the controller; close_session below
+    // forces the Channel stream to exit.
+    server.state().close_session(&name).await?;
+    run_handle.await.ok();
+
+    // Allow the spawned task to drop and decrement the counter.
+    time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        !session.has_active_grpc(),
+        "expected inactive grpc after CLI disconnect",
+    );
+    Ok(())
+}
