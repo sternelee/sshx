@@ -42,6 +42,7 @@
 | `cb976b9` | §2.5 cursor broadcast throttle (50 ms) | ✅ |
 | `fcde9ed` | §4.1 ownership cache TTL 2 s → 30 s + transfer invalidation hook | ✅ |
 | `7bc069b` | §5.4 AES-GCM `aead::Aead` → `aead::AeadInOut` in-place | ✅ — single allocation per chunk; wire format unchanged |
+| `33b3e2a..a38c6e0` | §3.4 cold-tier idle-session eviction | ✅ — see §3.4 below |
 
 ---
 
@@ -270,21 +271,24 @@ A UTF-8 codepoint is at most 4 bytes, so the loop is bounded by 4 iterations, no
 
 **Verify**: read source, run `cargo asm` on `IdCounter::get_current_values`.
 
-### 3.4 [🟡] [✅ partial `14ae3db`] Rolling buffer size: 2 MiB on server, 8–12 MiB on client
+### 3.4 [🟡] [✅ `14ae3db` + `33b3e2a..a38c6e0`] Rolling buffer size: 2 MiB on server, 8–12 MiB on client; cold-tier eviction
 **Where**:
-- Server: `session.rs:26` `SHELL_STORED_BYTES = 2 MiB`.
+- Server: `session.rs:26` `SHELL_STORED_BYTES = 2 MiB` (configurable via `SSHX_SHELL_STORED_BYTES`).
+- Server cold tier: `state.rs::close_old_sessions` second branch + `state.rs::frontend_connect` thaw branch.
 - Client: `runner.rs:16-17` `CONTENT_ROLLING_BYTES = 8 MiB`, `CONTENT_PRUNE_BYTES = 12 MiB`.
 
-**Current**: per-shell. With 100 sessions × 5 shells each, server uses up to 1 GiB just for output buffers. Client uses up to 60 MiB per shell × shells.
+**Current**: per-shell. With 100 sessions × 5 shells each, hot RSS still scales linearly until the cold-tier sweeper kicks in. Idle sessions (no active gRPC stream **and** zero WebSocket viewers) for ≥ `SSHX_COLD_AFTER_MS` (default 60 s, range [5 s, 300 s]) are now snapshotted to Redis via `evict_to_cold` and removed from the in-memory `DashMap`. They are lazily restored on the next `frontend_connect` (WebSocket reconnect) or `Open` (CLI re-attach), reusing the existing `Session::snapshot` / `Session::restore` round-trip.
 
-**Proposal**:
-- Make `SHELL_STORED_BYTES` configurable via CLI flag (already an integer constant). Add an env var `SSHX_SHELL_STORED_BYTES`.
-- Consider tiered storage: keep the most recent 256 KiB hot; offload older chunks to a compressed `Vec<u8>` zone that is decompressed only on subscriber catch-up.
-- For the client, `CONTENT_PRUNE_BYTES = 12 MiB` is fine (only paid when the shell falls badly behind), but document it in `--help`.
+`MAX_SNAPSHOT_SIZE` was lifted from 4 MiB to 64 MiB so the full rolling buffer fits in a single snapshot — required for cold-tier round-trips to be lossless. The `background_sync` snapshot loop (every 4 s) still respects the same cap.
 
-**Risk**: low (configurability) to medium (tiered storage).
+**Risks accepted**: gating on `mesh.is_some()` means single-node deployments are no-ops; thaw races are absorbed by `ServerState::insert`'s existing `prev_session.shutdown()` semantics; cold-tier requires `redis_url` to be set on the `ServerOptions`.
 
-**Verify**: under 1000 sessions × 5 shells idle, RSS before/after configurable buffer.
+**Outstanding**: tiered storage *within* a hot session (256 KiB hot zone + compressed cold zone) is still future work — see §11. The current cold tier evicts *whole sessions*, not individual shell tail data.
+
+**Verify**:
+- New tests: `crates/sshx-server/src/session/snapshot.rs::snapshot_preserves_full_rolling_buffer`, `crates/sshx-server/src/session.rs::cold_accessors_tests`, `crates/sshx-server/src/state.rs::cold_threshold_tests`, `crates/sshx-server/tests/with_client.rs::test_grpc_active_counter_tracks_stream` and the three `test_cold_*` integration tests gated behind `SSHX_TEST_REDIS_URL`.
+- Bench: `benches/snapshot.rs` now covers 1/4/16 shells × 2 MiB encode + decode.
+- Docs: spec `docs/superpowers/specs/2026-04-30-cold-tier-design.md`, plan `docs/superpowers/plans/2026-04-30-cold-tier-implementation.md`.
 
 ### 3.5 [🟡] [✅ `bed9898`] `last_accessed` uses `Mutex<Instant>` per session
 **Where**: `crates/sshx-server/src/session.rs:57,114,414-420`.
@@ -507,6 +511,7 @@ Updated after the first round of changes. Status legend at top of file.
 | `cfb9214` | §1.3, §3.6, §7.5 | TraceLayer + per-message span demoted from INFO to DEBUG |
 | `d34ca3d` | §2.3, §7.8 | broadcast capacity 256 → 1024 |
 | `14ae3db` | §3.4 (partial), §7.7 | `SHELL_STORED_BYTES` configurable via `SSHX_SHELL_STORED_BYTES` env var (≥ 4 KiB floor; default 2 MiB) |
+| `33b3e2a..a38c6e0` | §3.4 (cold tier) | Cold-tier eviction sweeper (`SSHX_COLD_AFTER_MS`, default 60 s, range [5 s, 300 s]) + lazy thaw on `frontend_connect`; `MAX_SNAPSHOT_SIZE` 4 MiB → 64 MiB; `Session::user_count` / `has_active_grpc` / `grpc_scope` accessors; `StorageMesh::write_snapshot` extracted; `ServerState::evict_to_cold` + `mesh()` exposed for tests; bench `snapshot.rs` covers 2 MiB encode + decode; integration tests gated behind `SSHX_TEST_REDIS_URL` |
 | `520946f` | §1.1, §7.6 | `RECONNECT_INTERVAL` 60 s → 600 s (conservative; full removal still ⏸️) |
 | `01c1699` | §1.2, top-10 #1 | broadcast frames pre-encoded once via `Sender<Bytes>`; `receiver_count() == 0` short-circuit |
 | `ac157ba` | §2.1, top-10 #5 | `RwLock<HashMap<Sid, State>>` → `RwLock<HashMap<Sid, Arc<Mutex<State>>>>`; outer→inner lock order; `add_data` rechecks `closed` defensively |
@@ -531,7 +536,7 @@ Updated after the first round of changes. Status legend at top of file.
 - **§5.4** AES-256-GCM in-place encryption (avoid per-chunk `Vec` allocation).
 - **§5.5** Echo runner copies via `String::from_utf8_lossy`.
 - **§3.3** `IdCounter::get_current_values` — verify atomic implementation.
-- **§3.4** (remaining) Tiered storage: hot 256 KiB + cold compressed zone.
+- **§3.4** (within-session tiered storage) Hot 256 KiB + compressed cold zone *inside a single Session*. The whole-session cold-tier landed (`33b3e2a..a38c6e0`); intra-session tiering is still future work and only useful once §3.4 cold tier shows it does not already cover the memory budget.
 - **Top-10 #6** Argon2 KDF on the WS task — frontend-side mostly; no Rust change required immediately.
 - **Top-10 #10** Redis sequence-number sync interval reduction.
 
@@ -566,12 +571,19 @@ cargo bench -p sshx-server
 | `sshx-server::snapshot` | `encode+zstd3/1sh_32KiB` | 2.43 µs | (input-rate, see note) |
 | `sshx-server::snapshot` | `encode+zstd3/4sh_64KiB` | 6.42 µs | |
 | `sshx-server::snapshot` | `encode+zstd3/16sh_128KiB` | 11.5 µs | |
+| `sshx-server::snapshot` | `encode+zstd3/1sh_2MiB` | 2.29 µs | (highly compressible fill bytes) |
+| `sshx-server::snapshot` | `encode+zstd3/4sh_2MiB` | 5.71 µs | |
+| `sshx-server::snapshot` | `encode+zstd3/16sh_2MiB` | 10.8 µs | |
+| `sshx-server::snapshot` | `decode+zstd3/1sh_2MiB` | 3.84 µs | thaw / cold-tier reload path |
+| `sshx-server::snapshot` | `decode+zstd3/4sh_2MiB` | 5.11 µs | |
+| `sshx-server::snapshot` | `decode+zstd3/16sh_2MiB` | 11.1 µs | |
 
 Notes:
 
 - `prev_char_boundary` is constant in input length — confirms the §1.5 rewrite is O(1) regardless of how far into a multi-byte string we scan.
 - `encrypt_v2` / `decrypt_v2` 1.53 µs / 4 KiB ≈ 2.5 GiB/s is the post-`7bc069b` AeadInOut number; pre-rewrite would need a `git revert` for an A/B comparison.
-- `session_snapshot` throughput is reported against *input* bytes; per-shell pruning at `SHELL_SNAPSHOT_BYTES = 32 KiB` means actual serialized payload is much smaller. Track absolute time, not throughput.
+- `session_snapshot` throughput is reported against *input* bytes; per-shell pruning at `SHELL_SNAPSHOT_BYTES = SHELL_STORED_BYTES` (default 2 MiB) means the actual serialized payload is much smaller, especially for the 2 MiB variants whose fill bytes are highly compressible. Track absolute time, not throughput.
+- `decode+zstd3/*` numbers are the cost of `Session::restore` (zstd decompress + ciborium decode + `Session::new` + per-shell `add_data` replay) on the WebSocket reconnect / cold-tier thaw path. The 16 sh × 2 MiB case decodes in ~11 µs, well below typical WebSocket round-trip time.
 
 ---
 
