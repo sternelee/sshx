@@ -66,8 +66,11 @@
   const TERM_MAX_COLS = 400;
   const SPLITTER_PX = 4;
   const MIN_FRAC = 0.08;
-  // .term-container chrome: wterm padding 12px×2 + border 1px×2 = 26px per axis
-  const TERM_CHROME_PX = 26;
+  // .term-container chrome in pane mode:
+  //   - .wterm has padding: 12px on all sides (24px per axis)
+  //   - In pane mode the 1px border on .term-container is overridden to none
+  //     (pane-wrapper's active outline is used instead), so only 24px counts.
+  const TERM_CHROME_PX = 24;
 
   // ---------------------------------------------------------------------------
   // Layout tree
@@ -868,6 +871,27 @@
   .pane-wrapper.active-pane {
     outline: 1px solid rgb(99, 102, 241);
     outline-offset: -1px;
+  }
+
+  /*
+   * Make .term-container (rendered by XTerm.svelte) fill the entire pane.
+   * XTerm is `display: inline-block` sized to cols×charWidth + wterm-padding,
+   * which always leaves a fractional-pixel gap at the right/bottom edge.
+   * Setting position:absolute + inset:0 makes the container fill pane-wrapper;
+   * the wterm grid renders at top-left and the remaining pixels show as the
+   * terminal background colour. overflow:hidden clips any wterm overflow.
+   * border:none removes the per-terminal border (the active-pane outline on
+   * .pane-wrapper serves as the selection indicator instead).
+   */
+  .pane-wrapper :global(.term-container) {
+    position: absolute !important;
+    inset: 0 !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    border: none !important;
+    border-radius: 0 !important;
+    overflow: hidden !important;
   }
 
   .splitter {
