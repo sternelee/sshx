@@ -38,17 +38,53 @@ fn build_session(num_shells: usize, bytes_per_shell: usize) -> Session {
 fn bench_snapshot(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_snapshot");
     // Shells × bytes-per-shell. Total is the throughput input.
-    for &(shells, per_shell_kib) in &[(1usize, 32usize), (4, 64), (16, 128)] {
-        let total_bytes = (shells * per_shell_kib * 1024) as u64;
-        let session = build_session(shells, per_shell_kib * 1024);
+    //
+    // Small variants (≤ 2 MiB total) match the original §3.1 baseline.
+    // Large variants (2 MiB per shell) approximate a populated rolling
+    // buffer at the cold-tier eviction snapshot size, validating that
+    // the lifted MAX_SNAPSHOT_SIZE (4 MiB → 64 MiB) does not regress
+    // the encode path and giving us an apples-to-apples decode number
+    // for thaw cost on the WebSocket reconnect path.
+    let cases: [(usize, usize); 6] = [
+        (1, 32 * 1024),
+        (4, 64 * 1024),
+        (16, 128 * 1024),
+        (1, 2 * 1024 * 1024),
+        (4, 2 * 1024 * 1024),
+        (16, 2 * 1024 * 1024),
+    ];
+    for &(shells, per_shell_bytes) in &cases {
+        let total_bytes = (shells * per_shell_bytes) as u64;
+        let label = if per_shell_bytes >= 1024 * 1024 {
+            format!("{shells}sh_{}MiB", per_shell_bytes / (1024 * 1024))
+        } else {
+            format!("{shells}sh_{}KiB", per_shell_bytes / 1024)
+        };
+        let session = build_session(shells, per_shell_bytes);
         group.throughput(Throughput::Bytes(total_bytes));
         group.bench_with_input(
-            BenchmarkId::new("encode+zstd3", format!("{shells}sh_{per_shell_kib}KiB")),
+            BenchmarkId::new("encode+zstd3", &label),
             &session,
             |b, session| {
                 b.iter(|| {
                     let buf = session.snapshot().expect("snapshot");
                     black_box(buf);
+                })
+            },
+        );
+
+        // Decode path uses a freshly-encoded snapshot per benchmark
+        // group setup; iter_with_setup keeps measurement focused on
+        // restore (zstd decompress + ciborium decode + Session rebuild)
+        // without re-encoding on every sample.
+        let snapshot = session.snapshot().expect("snapshot for decode bench");
+        group.bench_with_input(
+            BenchmarkId::new("decode+zstd3", &label),
+            &snapshot,
+            |b, snapshot| {
+                b.iter(|| {
+                    let restored = Session::restore(snapshot).expect("restore");
+                    black_box(restored);
                 })
             },
         );
