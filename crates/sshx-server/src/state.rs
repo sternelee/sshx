@@ -1,7 +1,7 @@
 //! Stateful components of the server, managing multiple sessions.
 
 use std::pin::pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,7 +11,7 @@ use sha2::Sha256;
 use sshx_core::rand_alphanumeric;
 use tokio::time;
 use tokio_stream::StreamExt;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use self::mesh::StorageMesh;
 use crate::session::Session;
@@ -25,6 +25,22 @@ pub mod mesh;
 /// then its updated timestamp will be out-of-date, so we close it and remove it
 /// from the state to reduce memory usage.
 const DISCONNECTED_SESSION_EXPIRY: Duration = Duration::from_secs(300);
+
+/// After a session has been idle this long with no CLI stream and no viewers,
+/// evict it from the hot map to the Redis cold tier. The snapshot remains
+/// recoverable until `DISCONNECTED_SESSION_EXPIRY` elapses (Redis TTL).
+///
+/// Override with `SSHX_COLD_AFTER_MS`. Default 60 s. Below 5 s risks
+/// flapping on brief CLI reconnects; at or above the full expiry would be
+/// a no-op. Out-of-range values silently fall back to the default.
+static COLD_THRESHOLD: LazyLock<Duration> = LazyLock::new(|| {
+    std::env::var("SSHX_COLD_AFTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|d| *d >= Duration::from_secs(5) && *d < DISCONNECTED_SESSION_EXPIRY)
+        .unwrap_or(Duration::from_secs(60))
+});
 
 /// Shared state object for global server logic.
 pub struct ServerState {
@@ -131,7 +147,6 @@ impl ServerState {
     /// while keeping its state recoverable from the mesh snapshot.
     ///
     /// Errors when mesh is disabled or Redis fails.
-    #[allow(dead_code)] // wired into close_old_sessions in the next commit
     async fn evict_to_cold(&self, name: &str, session: &Arc<Session>) -> Result<()> {
         let mesh = self.mesh.as_ref().context("mesh disabled")?;
         let snapshot = session.snapshot()?;
@@ -196,21 +211,43 @@ impl ServerState {
         }
     }
 
-    /// Close all sessions that have been disconnected for too long.
+    /// Close (full expiry) and cold-evict (idle but pre-expiry) old sessions.
     pub async fn close_old_sessions(&self) {
         loop {
             time::sleep(DISCONNECTED_SESSION_EXPIRY / 5).await;
             let mut to_close = Vec::new();
+            let mut to_evict = Vec::new();
             for entry in &self.store {
                 let session = entry.value();
-                if session.last_accessed_elapsed() > DISCONNECTED_SESSION_EXPIRY {
+                let idle = session.last_accessed_elapsed();
+                if idle > DISCONNECTED_SESSION_EXPIRY {
                     to_close.push(entry.key().clone());
+                } else if self.mesh.is_some()
+                    && !session.has_active_grpc()
+                    && session.user_count() == 0
+                    && idle > *COLD_THRESHOLD
+                {
+                    to_evict.push(entry.key().clone());
                 }
             }
             for name in to_close {
                 if let Err(err) = self.close_session(&name).await {
                     error!(?err, "failed to close old session {name}");
                 }
+            }
+            for name in to_evict {
+                let Some(session) = self.lookup(&name) else {
+                    continue;
+                };
+                if let Err(err) = self.evict_to_cold(&name, &session).await {
+                    warn!(?err, "skip evict; could not sync {name}");
+                    continue;
+                }
+                // Order matters: snapshot is durable in Redis BEFORE we
+                // remove from the hot map and shut down background_sync.
+                self.store.remove(&name);
+                session.shutdown();
+                info!(name, "session evicted to cold tier");
             }
         }
     }
@@ -220,5 +257,40 @@ impl ServerState {
         for entry in &self.store {
             entry.value().shutdown();
         }
+    }
+}
+
+#[cfg(test)]
+mod cold_threshold_tests {
+    use super::*;
+
+    fn parse(env: Option<&str>) -> Duration {
+        env.and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .filter(|d| *d >= Duration::from_secs(5) && *d < DISCONNECTED_SESSION_EXPIRY)
+            .unwrap_or(Duration::from_secs(60))
+    }
+
+    #[test]
+    fn cold_threshold_default_60s() {
+        assert_eq!(parse(None), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn cold_threshold_rejects_oversize() {
+        // 999_999 ms = 999 s, > DISCONNECTED_SESSION_EXPIRY (300 s) -> reject.
+        assert_eq!(parse(Some("999999")), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn cold_threshold_rejects_too_small() {
+        // 1000 ms = 1 s, < 5 s minimum -> reject.
+        assert_eq!(parse(Some("1000")), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn cold_threshold_accepts_valid() {
+        // 30 s is in range [5, 300).
+        assert_eq!(parse(Some("30000")), Duration::from_secs(30));
     }
 }
