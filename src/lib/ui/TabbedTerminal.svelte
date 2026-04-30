@@ -267,7 +267,7 @@
     const count = ids.size;
     const primary = ids.has(activePaneId) ? activePaneId : ids.values().next().value;
     const title = tabTitles[primary as number] ?? "Terminal";
-    return count > 1 ? `${title} (${count})` : title;
+    return title;
   }
 
   // ---------------------------------------------------------------------------
