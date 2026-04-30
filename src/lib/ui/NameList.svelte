@@ -4,9 +4,9 @@
   import type { WsUser } from "$lib/protocol";
   import { nameToHue } from "./LiveCursor.svelte";
 
-  export let users: [number, WsUser][];
-  $: sortedUsers = [...users].sort(
-    (a, b) => Number(b[1].canWrite) - Number(a[1].canWrite),
+  let { users }: { users: [number, WsUser][] } = $props();
+  const sortedUsers = $derived(
+    [...users].sort((a, b) => Number(b[1].canWrite) - Number(a[1].canWrite)),
   );
 </script>
 
@@ -19,7 +19,7 @@
       <div
         style:background="hsl({nameToHue(user.name)}, 75%, 60%)"
         class="w-3.5 h-3.5 rounded-full"
-      />
+      ></div>
       <div
         class="text-sm font-medium bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-300"
       >

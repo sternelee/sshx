@@ -4,9 +4,10 @@
   import OverlayMenu from "./OverlayMenu.svelte";
   import { settings, updateSettings } from "$lib/settings";
 
-  let value = "";
+  let value = $state("");
 
-  function handleSubmit() {
+  function handleSubmit(event: SubmitEvent) {
+    event.preventDefault();
     updateSettings({ name: value });
   }
 </script>
@@ -17,7 +18,7 @@
   maxWidth={640}
   open={browser && !$settings.name}
 >
-  <form class="flex gap-2" on:submit|preventDefault={handleSubmit}>
+  <form class="flex gap-2" onsubmit={handleSubmit}>
     <input
       class="flex-1 w-full px-3 py-2 rounded outline-none text-zinc-300 bg-zinc-800"
       placeholder="Your name"

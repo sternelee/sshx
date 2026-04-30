@@ -1,4 +1,4 @@
-<script lang="ts" context="module">
+<script lang="ts" module>
   export type ChatMessage = {
     uid: number;
     name: string;
@@ -8,44 +8,54 @@
 </script>
 
 <script lang="ts">
-  import { createEventDispatcher, tick } from "svelte";
+  import { tick } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { SendIcon } from "svelte-feather-icons";
 
   import CircleButton from "./CircleButton.svelte";
   import CircleButtons from "./CircleButtons.svelte";
 
-  const dispatch = createEventDispatcher<{ chat: string; close: void }>();
+  let {
+    userId,
+    messages,
+    onchat,
+    onclose,
+  }: {
+    userId: number;
+    messages: ChatMessage[];
+    onchat?: (text: string) => void;
+    onclose?: () => void;
+  } = $props();
 
-  export let userId: number;
-  export let messages: ChatMessage[];
-
-  let groupedMessages: ChatMessage[][];
-  $: {
-    groupedMessages = [];
+  const groupedMessages = $derived.by(() => {
+    const groups: ChatMessage[][] = [];
     let lastSender = -1;
     for (const chat of messages) {
       if (chat.uid === lastSender) {
-        groupedMessages[groupedMessages.length - 1].push(chat);
+        groups[groups.length - 1].push(chat);
       } else {
-        groupedMessages.push([chat]);
+        groups.push([chat]);
         lastSender = chat.uid;
       }
     }
-  }
+    return groups;
+  });
 
   let scroller: HTMLElement;
-  $: if (scroller && groupedMessages.length) {
-    tick().then(() => {
-      scroller.scroll({ top: scroller.scrollHeight });
-    });
-  }
+  $effect(() => {
+    if (scroller && groupedMessages.length) {
+      tick().then(() => {
+        scroller.scroll({ top: scroller.scrollHeight });
+      });
+    }
+  });
 
-  let text: string;
+  let text = $state("");
 
-  function handleSubmit() {
+  function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
     if (text) {
-      dispatch("chat", text);
+      onchat?.(text);
       text = "";
     }
   }
@@ -58,7 +68,7 @@
 >
   <div class="flex items-center p-3">
     <CircleButtons>
-      <CircleButton kind="red" on:click={() => dispatch("close")} />
+      <CircleButton kind="red" onclick={() => onclose?.()} />
     </CircleButtons>
     <div class="ml-3 text-zinc-300 text-sm font-medium">Chat Messages</div>
   </div>
@@ -83,7 +93,7 @@
     </div>
   </div>
 
-  <form class="relative p-3" on:submit|preventDefault={handleSubmit}>
+  <form class="relative p-3" onsubmit={handleSubmit}>
     <input
       class="w-full rounded-2xl bg-zinc-800 pl-3.5 pr-9 py-1.5 outline-none text-zinc-300 focus:ring-2 focus:ring-indigo-500/50"
       placeholder="Aa"

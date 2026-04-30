@@ -1,29 +1,56 @@
 <!-- @component Tabbed terminal window with tiling split panes (right/left/up/down). -->
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
   import { fade } from "svelte/transition";
   import type { WsWinsize } from "$lib/protocol";
   import XTerm from "./XTerm.svelte";
   import CircleButtons from "./CircleButtons.svelte";
   import CircleButton from "./CircleButton.svelte";
 
-  /** Server-authoritative list of all shells. */
-  export let shells: [number, WsWinsize][];
-  /** Shell id currently visible. */
-  export let activeTabId: number;
-  /**
-   * Pixel distance from the top of the viewport where this overlay starts
-   * (i.e. the bottom edge of the toolbar + gap). Passed from Session.
-   */
-  export let toolbarBottom: number = 96;
-  /** Shared writers record from Session — XTerm binds into this object. */
-  export let writers: Record<number, (data: string) => void>;
-  /** Shared termElements record from Session. */
-  export let termElements: Record<number, HTMLDivElement>;
-  /** Whether the user has write access. */
-  export let hasWriteAccess: boolean | undefined;
-  /** Whether the WebSocket is currently connected. */
-  export let connected: boolean = false;
+  let {
+    shells,
+    activeTabId,
+    toolbarBottom = 96,
+    writers,
+    termElements,
+    hasWriteAccess,
+    connected = false,
+    onswitchTab,
+    onnewTab,
+    onsplitTab,
+    oncloseTab,
+    onresize,
+    ondata,
+    onbringToFront,
+    onfocus,
+    onblur,
+  }: {
+    /** Server-authoritative list of all shells. */
+    shells: [number, WsWinsize][];
+    /** Shell id currently visible. */
+    activeTabId: number;
+    /** Pixel distance from the top of the viewport where this overlay starts. */
+    toolbarBottom?: number;
+    /** Shared writers record from Session — XTerm binds into this object. */
+    writers: Record<number, (data: string) => void>;
+    /** Shared termElements record from Session. */
+    termElements: Record<number, HTMLDivElement>;
+    /** Whether the user has write access. */
+    hasWriteAccess: boolean | undefined;
+    /** Whether the WebSocket is currently connected. */
+    connected?: boolean;
+    onswitchTab?: (detail: { id: number }) => void;
+    onnewTab?: () => void;
+    onsplitTab?: (detail: {
+      fromId: number;
+      pos: "right" | "left" | "up" | "down";
+    }) => void;
+    oncloseTab?: (detail: { id: number }) => void;
+    onresize?: (detail: { id: number; cols: number; rows: number }) => void;
+    ondata?: (detail: { id: number; data: Uint8Array }) => void;
+    onbringToFront?: () => void;
+    onfocus?: (detail: { id: number }) => void;
+    onblur?: (detail: { id: number }) => void;
+  } = $props();
 
   const TERM_MIN_ROWS = 8;
   const TERM_MIN_COLS = 32;
@@ -31,57 +58,28 @@
   const TERM_MAX_COLS = 400;
   const SPLITTER_PX = 4;
   const MIN_FRAC = 0.08;
-  // .term-container chrome around the wterm grid:
-  //   - .wterm has padding: 12px on all sides (24px per axis)
-  //   - .term-container has a 1px border on all sides (2px per axis)
-  // The rendered terminal occupies `cols*charWidth + 26` by
-  // `rows*rowHeight + 26` px (see XTerm.updateSize). We must subtract this
-  // chrome from the available pane rect when computing cols/rows, otherwise
-  // the rendered terminal overflows the pane-wrapper and the right/bottom
-  // edges get clipped — most visible after Split Left/Right/Up/Down.
+  // .term-container chrome: wterm padding 12px×2 + border 1px×2 = 26px per axis
   const TERM_CHROME_PX = 26;
 
-  const dispatch = createEventDispatcher<{
-    /** User switched to a different tab/pane. */
-    switchTab: { id: number };
-    /** User clicked + to create a new terminal (no split). */
-    newTab: void;
-    /** User requested a split — Session should create a new shell, which
-     *  this component will then place next to `fromId` in the layout tree. */
-    splitTab: { fromId: number; pos: "right" | "left" | "up" | "down" };
-    /** User clicked × on a tab/pane (close that shell). */
-    closeTab: { id: number };
-    /** A pane resized — used to sync that PTY's dimensions. */
-    resize: { id: number; cols: number; rows: number };
-    /** Keystroke from a terminal. */
-    data: { id: number; data: Uint8Array };
-    /** mousedown on window — used to close overlay panels in Session. */
-    bringToFront: void;
-    /** Active terminal gained focus. */
-    focus: { id: number };
-    /** Active terminal lost focus. */
-    blur: { id: number };
-  }>();
-
   // ---------------------------------------------------------------------------
-  // Layout tree — each top-level node is a "tab"; leaves are shell ids.
+  // Layout tree
   // ---------------------------------------------------------------------------
   type Leaf = { type: "leaf"; id: number };
   type Split = {
     type: "split";
     dir: "h" | "v";
     children: LayoutNode[];
-    sizes: number[]; // weights, normalized to sum=1
+    sizes: number[];
   };
   type LayoutNode = Leaf | Split;
 
-  let groups: LayoutNode[] = [];
-  let activeGroupIdx = 0;
-  let activePaneId = -1;
-  /** When set, the next new shell will be inserted as a sibling of fromId. */
-  let pendingSplit:
-    | { fromId: number; pos: "right" | "left" | "up" | "down" }
-    | null = null;
+  let groups = $state<LayoutNode[]>([]);
+  let activeGroupIdx = $state(0);
+  let activePaneId = $state(-1);
+  let pendingSplit = $state<{
+    fromId: number;
+    pos: "right" | "left" | "up" | "down";
+  } | null>(null);
 
   function collectIds(n: LayoutNode, out: Set<number>) {
     if (n.type === "leaf") out.add(n.id);
@@ -97,10 +95,7 @@
     return -1;
   }
 
-  function removeMissing(
-    n: LayoutNode,
-    valid: Set<number>,
-  ): LayoutNode | null {
+  function removeMissing(n: LayoutNode, valid: Set<number>): LayoutNode | null {
     if (n.type === "leaf") return valid.has(n.id) ? n : null;
     const newChildren: LayoutNode[] = [];
     const newSizes: number[] = [];
@@ -122,7 +117,6 @@
     };
   }
 
-  /** Insert `newId` as sibling of `fromId` according to `pos`. */
   function insertSplit(
     n: LayoutNode,
     fromId: number,
@@ -131,16 +125,12 @@
   ): LayoutNode {
     if (n.type === "leaf") {
       if (n.id !== fromId) return n;
-      const dir: "h" | "v" =
-        pos === "right" || pos === "left" ? "h" : "v";
+      const dir: "h" | "v" = pos === "right" || pos === "left" ? "h" : "v";
       const before = pos === "left" || pos === "up";
       const newLeaf: Leaf = { type: "leaf", id: newId };
       const children: LayoutNode[] = before ? [newLeaf, n] : [n, newLeaf];
       return { type: "split", dir, children, sizes: [0.5, 0.5] };
     }
-
-    // Try to insert as sibling within this split if direction matches and
-    // fromId is a direct leaf child.
     const dirMatch =
       (n.dir === "h" && (pos === "right" || pos === "left")) ||
       (n.dir === "v" && (pos === "down" || pos === "up"));
@@ -166,8 +156,6 @@
         };
       }
     }
-
-    // Recurse into children.
     let changed = false;
     const newChildren = n.children.map((c) => {
       const updated = insertSplit(c, fromId, newId, pos);
@@ -178,11 +166,8 @@
     return { type: "split", dir: n.dir, children: newChildren, sizes: n.sizes };
   }
 
-  /** Sync the layout tree to the authoritative shells list. */
   function syncGroups(shellList: [number, WsWinsize][]) {
     const validIds = new Set(shellList.map(([id]) => id));
-
-    // Remove leaves no longer present.
     const pruned: LayoutNode[] = [];
     for (const g of groups) {
       const r = removeMissing(g, validIds);
@@ -190,22 +175,15 @@
     }
     groups = pruned;
 
-    // Track which ids are already placed.
     const placed = new Set<number>();
     for (const g of groups) collectIds(g, placed);
 
-    // Add new shells.
     for (const [id] of shellList) {
       if (placed.has(id)) continue;
       if (pendingSplit && placed.has(pendingSplit.fromId)) {
         const gi = findGroupIdx(pendingSplit.fromId);
         if (gi >= 0) {
-          groups[gi] = insertSplit(
-            groups[gi],
-            pendingSplit.fromId,
-            id,
-            pendingSplit.pos,
-          );
+          groups[gi] = insertSplit(groups[gi], pendingSplit.fromId, id, pendingSplit.pos);
           activeGroupIdx = gi;
           activePaneId = id;
           pendingSplit = null;
@@ -220,89 +198,95 @@
       placed.add(id);
     }
 
-    // Force reactivity.
     groups = groups;
-
-    // Clamp activeGroupIdx.
     if (activeGroupIdx >= groups.length) {
       activeGroupIdx = Math.max(0, groups.length - 1);
     }
   }
 
-  $: syncGroups(shells);
+  // Sync on shells change
+  $effect(() => { syncGroups(shells); });
 
-  // External activeTabId → align internal active group/pane.
-  $: if (activeTabId && groups.length > 0) {
-    const gi = findGroupIdx(activeTabId);
-    if (gi >= 0) {
-      activeGroupIdx = gi;
-      activePaneId = activeTabId;
+  // External activeTabId → align internal active group/pane
+  $effect(() => {
+    if (activeTabId && groups.length > 0) {
+      const gi = findGroupIdx(activeTabId);
+      if (gi >= 0) {
+        activeGroupIdx = gi;
+        activePaneId = activeTabId;
+      }
     }
-  }
+  });
 
-  // Compute set of ids visible in the active group.
-  let activeGroupIds = new Set<number>();
-  $: {
-    activeGroupIds = new Set<number>();
-    if (groups[activeGroupIdx]) collectIds(groups[activeGroupIdx], activeGroupIds);
-  }
+  const activeGroupIds = $derived.by(() => {
+    const s = new Set<number>();
+    if (groups[activeGroupIdx]) collectIds(groups[activeGroupIdx], s);
+    return s;
+  });
 
-  // Validate activePaneId is in active group.
-  $: if (groups[activeGroupIdx] && !activeGroupIds.has(activePaneId)) {
-    activePaneId = activeGroupIds.values().next().value ?? -1;
-  }
+  // Validate activePaneId is in active group
+  $effect(() => {
+    if (groups[activeGroupIdx] && !activeGroupIds.has(activePaneId)) {
+      activePaneId = activeGroupIds.values().next().value ?? -1;
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Per-tab title tracking
   // ---------------------------------------------------------------------------
-  let tabTitles: Record<number, string> = {};
-  $: for (const [id] of shells) {
-    if (!(id in tabTitles)) tabTitles[id] = "Terminal";
-  }
+  let tabTitles = $state<Record<number, string>>({});
+
+  $effect(() => {
+    for (const [id] of shells) {
+      if (!(id in tabTitles)) tabTitles[id] = "Terminal";
+    }
+  });
 
   function groupTitle(g: LayoutNode | undefined): string {
     if (!g) return "Terminal";
     const ids = new Set<number>();
     collectIds(g, ids);
     const count = ids.size;
-    const primary =
-      ids.has(activePaneId) ? activePaneId : ids.values().next().value;
+    const primary = ids.has(activePaneId) ? activePaneId : ids.values().next().value;
     const title = tabTitles[primary as number] ?? "Terminal";
     return count > 1 ? `${title} (${count})` : title;
   }
 
   // ---------------------------------------------------------------------------
-  // Tab-bar scroll: keep active group visible.
+  // Tab-bar scroll: keep active group visible
   // ---------------------------------------------------------------------------
-  let tabListEl: HTMLDivElement;
-  $: if (activeGroupIdx >= 0 && tabListEl) {
-    const el = tabListEl.querySelector<HTMLElement>(
-      `[data-tabidx="${activeGroupIdx}"]`,
-    );
-    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }
+  let tabListEl = $state<HTMLDivElement | undefined>(undefined);
+
+  $effect(() => {
+    activeGroupIdx; // track
+    if (tabListEl) {
+      const el = tabListEl.querySelector<HTMLElement>(`[data-tabidx="${activeGroupIdx}"]`);
+      el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  });
 
   // ---------------------------------------------------------------------------
-  // Refocus active pane on switch.
+  // Refocus active pane on switch
   // ---------------------------------------------------------------------------
-  $: if (activePaneId > 0) {
-    requestAnimationFrame(() => {
-      const el = termElements[activePaneId];
-      if (!el) return;
-      const focusable = el.querySelector<HTMLElement>(
-        'textarea, [tabindex="0"]',
-      );
-      focusable?.focus();
-    });
-  }
+  $effect(() => {
+    const id = activePaneId;
+    if (id > 0) {
+      requestAnimationFrame(() => {
+        const el = termElements[id];
+        if (!el) return;
+        const focusable = el.querySelector<HTMLElement>('textarea, [tabindex="0"]');
+        focusable?.focus();
+      });
+    }
+  });
 
   // ---------------------------------------------------------------------------
-  // Char & term-area dimensions.
+  // Char & term-area dimensions
   // ---------------------------------------------------------------------------
-  let charWidth = 0;
-  let rowHeight = 0;
-  let termAreaWidth = 0;
-  let termAreaHeight = 0;
+  let charWidth = $state(0);
+  let rowHeight = $state(0);
+  let termAreaWidth = $state(0);
+  let termAreaHeight = $state(0);
 
   function observeSize(el: HTMLDivElement) {
     const ro = new ResizeObserver(([entry]) => {
@@ -314,77 +298,47 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Pane geometry — compute rects for each leaf in the active group.
+  // Pane geometry
   // ---------------------------------------------------------------------------
   type Rect = { x: number; y: number; w: number; h: number };
   type SplitterInfo = {
     key: string;
-    dir: "h" | "v"; // parent direction; "h" → vertical splitter line
-    path: number[]; // path to parent split node from active group root
-    leftIdx: number; // index of child to the left/top of the splitter
+    dir: "h" | "v";
+    path: number[];
+    leftIdx: number;
     rect: Rect;
   };
 
-  let paneRects: Record<number, Rect> = {};
-  let splitters: SplitterInfo[] = [];
-
-  function computeLayout(
-    root: LayoutNode,
-    width: number,
-    height: number,
-  ): { rects: Record<number, Rect>; splitters: SplitterInfo[] } {
+  function computeLayout(root: LayoutNode, width: number, height: number) {
     const rects: Record<number, Rect> = {};
     const sps: SplitterInfo[] = [];
     walk(root, 0, 0, width, height, []);
     return { rects, splitters: sps };
 
-    function walk(
-      n: LayoutNode,
-      x: number,
-      y: number,
-      w: number,
-      h: number,
-      path: number[],
-    ) {
-      if (n.type === "leaf") {
-        rects[n.id] = { x, y, w, h };
-        return;
-      }
-      const nChildren = n.children.length;
-      const totalGap = SPLITTER_PX * (nChildren - 1);
+    function walk(n: LayoutNode, x: number, y: number, w: number, h: number, path: number[]) {
+      if (n.type === "leaf") { rects[n.id] = { x, y, w, h }; return; }
+      const totalGap = SPLITTER_PX * (n.children.length - 1);
       if (n.dir === "h") {
         const usable = Math.max(0, w - totalGap);
         let cx = x;
-        for (let i = 0; i < nChildren; i++) {
+        for (let i = 0; i < n.children.length; i++) {
           const cw = n.sizes[i] * usable;
           walk(n.children[i], cx, y, cw, h, [...path, i]);
           cx += cw;
-          if (i < nChildren - 1) {
-            sps.push({
-              key: path.join(",") + ":" + i + "h",
-              dir: "h",
-              path,
-              leftIdx: i,
-              rect: { x: cx, y, w: SPLITTER_PX, h },
-            });
+          if (i < n.children.length - 1) {
+            sps.push({ key: path.join(",") + ":" + i + "h", dir: "h", path, leftIdx: i, rect: { x: cx, y, w: SPLITTER_PX, h } });
             cx += SPLITTER_PX;
           }
         }
       } else {
         const usable = Math.max(0, h - totalGap);
         let cy = y;
-        for (let i = 0; i < nChildren; i++) {
+        for (let i = 0; i < n.children.length; i++) {
           const ch = n.sizes[i] * usable;
           walk(n.children[i], x, cy, w, ch, [...path, i]);
           cy += ch;
-          if (i < nChildren - 1) {
-            sps.push({
-              key: path.join(",") + ":" + i + "v",
-              dir: "v",
-              path,
-              leftIdx: i,
-              rect: { x, y: cy, w, h: SPLITTER_PX },
-            });
+          if (i < n.children.length - 1) {
+            sps.push({ key: path.join(",") + ":" + i + "v", dir: "v", path, leftIdx: i, rect: { x, y: cy, w, h: SPLITTER_PX } });
             cy += SPLITTER_PX;
           }
         }
@@ -392,63 +346,54 @@
     }
   }
 
-  $: if (groups[activeGroupIdx] && termAreaWidth > 0 && termAreaHeight > 0) {
-    const out = computeLayout(
-      groups[activeGroupIdx],
-      termAreaWidth,
-      termAreaHeight,
-    );
-    paneRects = out.rects;
-    splitters = out.splitters;
-  } else {
-    paneRects = {};
-    splitters = [];
-  }
+  const layout = $derived.by(() => {
+    if (groups[activeGroupIdx] && termAreaWidth > 0 && termAreaHeight > 0) {
+      return computeLayout(groups[activeGroupIdx], termAreaWidth, termAreaHeight);
+    }
+    return { rects: {} as Record<number, Rect>, splitters: [] as SplitterInfo[] };
+  });
+
+  const paneRects = $derived(layout.rects);
+  const splitters = $derived(layout.splitters);
 
   // ---------------------------------------------------------------------------
-  // Per-pane cols/rows — dispatch resize per-id when changed.
+  // Per-pane cols/rows
   // ---------------------------------------------------------------------------
-  let paneSizes: Record<number, { cols: number; rows: number }> = {};
+  let paneSizes = $state<Record<number, { cols: number; rows: number }>>({});
+
   function clamp(v: number, lo: number, hi: number) {
     return Math.max(lo, Math.min(hi, v));
   }
 
-  $: if (charWidth > 0 && rowHeight > 0) {
+  $effect(() => {
+    if (charWidth <= 0 || rowHeight <= 0) return;
     const next: Record<number, { cols: number; rows: number }> = {};
     for (const idStr in paneRects) {
       const id = +idStr;
       const r = paneRects[id];
       const innerW = Math.max(0, r.w - TERM_CHROME_PX);
       const innerH = Math.max(0, r.h - TERM_CHROME_PX);
-      const c = clamp(
-        Math.floor(innerW / charWidth),
-        TERM_MIN_COLS,
-        TERM_MAX_COLS,
-      );
-      const rr = clamp(
-        Math.floor(innerH / rowHeight),
-        TERM_MIN_ROWS,
-        TERM_MAX_ROWS,
-      );
+      const c = clamp(Math.floor(innerW / charWidth), TERM_MIN_COLS, TERM_MAX_COLS);
+      const rr = clamp(Math.floor(innerH / rowHeight), TERM_MIN_ROWS, TERM_MAX_ROWS);
       next[id] = { cols: c, rows: rr };
       const prev = paneSizes[id];
       if (!prev || prev.cols !== c || prev.rows !== rr) {
-        dispatch("resize", { id, cols: c, rows: rr });
+        onresize?.({ id, cols: c, rows: rr });
       }
     }
     paneSizes = next;
-  }
+  });
 
   // ---------------------------------------------------------------------------
-  // Splitter drag.
+  // Splitter drag
   // ---------------------------------------------------------------------------
-  let drag: {
+  let drag = $state<{
     splitter: SplitterInfo;
-    startPx: number; // start client x or y
+    startPx: number;
     startSizes: number[];
-    parentUsable: number; // usable px in the parent split (excluding gaps)
+    parentUsable: number;
     pointerId: number;
-  } | null = null;
+  } | null>(null);
 
   function getNodeAtPath(root: LayoutNode, path: number[]): LayoutNode {
     let n = root;
@@ -459,11 +404,7 @@
     return n;
   }
 
-  function setNodeAtPath(
-    root: LayoutNode,
-    path: number[],
-    updater: (n: Split) => Split,
-  ): LayoutNode {
+  function setNodeAtPath(root: LayoutNode, path: number[], updater: (n: Split) => Split): LayoutNode {
     if (path.length === 0) {
       if (root.type !== "split") return root;
       return updater(root);
@@ -481,10 +422,9 @@
     const parent = getNodeAtPath(groups[activeGroupIdx], s.path);
     if (parent.type !== "split") return;
     const totalGap = SPLITTER_PX * (parent.children.length - 1);
-    const usable =
-      s.dir === "h"
-        ? Math.max(1, termAreaWidth - totalGap)
-        : Math.max(1, termAreaHeight - totalGap);
+    const usable = s.dir === "h"
+      ? Math.max(1, termAreaWidth - totalGap)
+      : Math.max(1, termAreaHeight - totalGap);
     drag = {
       splitter: s,
       startPx: s.dir === "h" ? e.clientX : e.clientY,
@@ -501,22 +441,13 @@
     if (!drag) return;
     const s = drag.splitter;
     const cur = s.dir === "h" ? e.clientX : e.clientY;
-    const deltaPx = cur - drag.startPx;
-    const deltaFrac = deltaPx / drag.parentUsable;
+    const deltaFrac = (cur - drag.startPx) / drag.parentUsable;
     const i = s.leftIdx;
     const a = drag.startSizes[i];
     const b = drag.startSizes[i + 1];
     const sum = a + b;
-    let newA = a + deltaFrac;
-    let newB = b - deltaFrac;
-    if (newA < MIN_FRAC) {
-      newA = MIN_FRAC;
-      newB = sum - MIN_FRAC;
-    }
-    if (newB < MIN_FRAC) {
-      newB = MIN_FRAC;
-      newA = sum - MIN_FRAC;
-    }
+    let newA = Math.max(MIN_FRAC, Math.min(sum - MIN_FRAC, a + deltaFrac));
+    let newB = sum - newA;
     const newSizes = [...drag.startSizes];
     newSizes[i] = newA;
     newSizes[i + 1] = newB;
@@ -529,26 +460,21 @@
 
   function onSplitterUp(e: PointerEvent) {
     if (!drag) return;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(drag.pointerId);
-    } catch {
-      /* noop */
-    }
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(drag.pointerId); } catch { /* noop */ }
     drag = null;
   }
 
   // ---------------------------------------------------------------------------
-  // Split actions.
+  // Split actions
   // ---------------------------------------------------------------------------
   function requestSplit(pos: "right" | "left" | "up" | "down") {
-    if (!hasWriteAccess || !connected) return;
-    if (activePaneId < 0) return;
+    if (!hasWriteAccess || !connected || activePaneId < 0) return;
     pendingSplit = { fromId: activePaneId, pos };
-    dispatch("splitTab", { fromId: activePaneId, pos });
+    onsplitTab?.({ fromId: activePaneId, pos });
   }
 
   // ---------------------------------------------------------------------------
-  // Active pane chrome resize (yellow/green buttons).
+  // Yellow / green button resize
   // ---------------------------------------------------------------------------
   function adjustActive(dCols: number, dRows: number) {
     if (!hasWriteAccess) return;
@@ -557,45 +483,39 @@
     const newCols = clamp(cur.cols + dCols, TERM_MIN_COLS, TERM_MAX_COLS);
     const newRows = clamp(cur.rows + dRows, TERM_MIN_ROWS, TERM_MAX_ROWS);
     if (newCols !== cur.cols || newRows !== cur.rows) {
-      paneSizes = {
-        ...paneSizes,
-        [activePaneId]: { cols: newCols, rows: newRows },
-      };
-      dispatch("resize", { id: activePaneId, cols: newCols, rows: newRows });
+      paneSizes = { ...paneSizes, [activePaneId]: { cols: newCols, rows: newRows } };
+      onresize?.({ id: activePaneId, cols: newCols, rows: newRows });
     }
   }
   const handleShrink = () => adjustActive(-10, -4);
   const handleExpand = () => adjustActive(10, 4);
 </script>
 
-<!--
-  Fixed overlay that fills the viewport from the bottom of the toolbar to the
-  bottom of the screen.
--->
 <div
   class="tab-overlay"
   style:top="{toolbarBottom}px"
   transition:fade|local
-  on:mousedown={() => dispatch("bringToFront")}
-  on:pointerdown={(e) => e.stopPropagation()}
+  onmousedown={() => onbringToFront?.()}
+  onpointerdown={(e) => e.stopPropagation()}
+  role="presentation"
 >
   <div class="tabbed-window">
     <!-- Tab bar -->
     <div class="tab-bar">
       <!-- Circle buttons -->
-      <div class="flex-shrink-0 px-2 flex items-center" data-circlebtn>
+      <div class="flex-shrink-0 px-2 flex items-center">
         <CircleButtons>
           <CircleButton
             kind="red"
-            on:mousedown={(e) => {
+            onmousedown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
-              for (const [id] of shells) dispatch("closeTab", { id });
+              for (const [id] of shells) oncloseTab?.({ id });
             }}
           />
           <CircleButton
             kind="yellow"
-            on:mousedown={(e) => {
+            onmousedown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
               handleShrink();
@@ -603,7 +523,7 @@
           />
           <CircleButton
             kind="green"
-            on:mousedown={(e) => {
+            onmousedown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
               handleExpand();
@@ -612,41 +532,38 @@
         </CircleButtons>
       </div>
 
-      <!-- Divider -->
       <div class="tab-divider"></div>
 
-      <!-- Tab list (one entry per group) -->
+      <!-- Tab list -->
       <div class="tab-list" bind:this={tabListEl}>
         {#each groups as g, gi (gi + ":" + (g.type === "leaf" ? g.id : "s"))}
-          {@const ids = (() => {
-            const s = new Set<number>();
-            collectIds(g, s);
-            return s;
-          })()}
+          {@const ids = (() => { const s = new Set<number>(); collectIds(g, s); return s; })()}
           <button
             class="tab-item"
             class:active={gi === activeGroupIdx}
             data-tabidx={gi}
-            on:mousedown={(e) => {
+            onmousedown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
               activeGroupIdx = gi;
-              const firstId =
-                ids.has(activePaneId)
-                  ? activePaneId
-                  : (ids.values().next().value as number);
+              const firstId = ids.has(activePaneId)
+                ? activePaneId
+                : (ids.values().next().value as number);
               activePaneId = firstId;
-              dispatch("switchTab", { id: firstId });
+              onswitchTab?.({ id: firstId });
             }}
             title={groupTitle(g)}
           >
             <span class="tab-title">{groupTitle(g)}</span>
             <span
               class="tab-close"
-              on:mousedown|stopPropagation={(e) => {
+              role="button"
+              tabindex="-1"
+              onmousedown={(e) => {
+                e.stopPropagation();
                 if (e.button !== 0) return;
                 e.preventDefault();
-                for (const id of ids) dispatch("closeTab", { id });
+                for (const id of ids) oncloseTab?.({ id });
               }}
             >×</span>
           </button>
@@ -654,69 +571,35 @@
       </div>
 
       <!-- Split buttons -->
-      <div class="split-btns" data-splitbtn>
-        <button
-          class="split-btn"
-          disabled={!connected || !hasWriteAccess || activePaneId < 0}
-          title="Split Left"
-          on:mousedown={(e) => {
-            if (e.button === 0) {
-              e.preventDefault();
-              requestSplit("left");
-            }
-          }}
-        >⇤</button>
-        <button
-          class="split-btn"
-          disabled={!connected || !hasWriteAccess || activePaneId < 0}
-          title="Split Up"
-          on:mousedown={(e) => {
-            if (e.button === 0) {
-              e.preventDefault();
-              requestSplit("up");
-            }
-          }}
-        >⤒</button>
-        <button
-          class="split-btn"
-          disabled={!connected || !hasWriteAccess || activePaneId < 0}
-          title="Split Down"
-          on:mousedown={(e) => {
-            if (e.button === 0) {
-              e.preventDefault();
-              requestSplit("down");
-            }
-          }}
-        >⤓</button>
-        <button
-          class="split-btn"
-          disabled={!connected || !hasWriteAccess || activePaneId < 0}
-          title="Split Right"
-          on:mousedown={(e) => {
-            if (e.button === 0) {
-              e.preventDefault();
-              requestSplit("right");
-            }
-          }}
-        >⇥</button>
+      <div class="split-btns">
+        {#each (["left", "up", "down", "right"] as const) as pos}
+          {@const label = pos === "left" ? "⇤" : pos === "up" ? "⤒" : pos === "down" ? "⤓" : "⇥"}
+          <button
+            class="split-btn"
+            disabled={!connected || !hasWriteAccess || activePaneId < 0}
+            title="Split {pos.charAt(0).toUpperCase() + pos.slice(1)}"
+            onmousedown={(e) => {
+              if (e.button === 0) { e.preventDefault(); requestSplit(pos); }
+            }}
+          >{label}</button>
+        {/each}
       </div>
 
       <!-- New tab button -->
       <button
         class="new-tab-btn"
-        data-newbtn
         disabled={!connected || !hasWriteAccess}
-        on:mousedown={(e) => {
+        onmousedown={(e) => {
           if (e.button === 0 && connected && hasWriteAccess) {
             e.preventDefault();
-            dispatch("newTab");
+            onnewTab?.();
           }
         }}
         title="New terminal"
       >＋</button>
     </div>
 
-    <!-- Terminal content area: panes positioned absolutely from layout tree -->
+    <!-- Terminal content area -->
     <div class="term-area" use:observeSize>
       {#each shells as [id] (id)}
         {@const inActive = activeGroupIds.has(id)}
@@ -730,10 +613,11 @@
           style:top="{r?.y ?? 0}px"
           style:width="{r?.w ?? 0}px"
           style:height="{r?.h ?? 0}px"
-          on:mousedown={() => {
+          role="presentation"
+          onmousedown={() => {
             if (inActive && id !== activePaneId) {
               activePaneId = id;
-              dispatch("switchTab", { id });
+              onswitchTab?.({ id });
             }
           }}
         >
@@ -744,27 +628,23 @@
             visible={inActive}
             bind:write={writers[id]}
             bind:termEl={termElements[id]}
-            on:cellsize={({ detail }) => {
-              charWidth = detail.charWidth;
-              rowHeight = detail.rowHeight;
+            oncellsize={({ charWidth: cw, rowHeight: rh }) => {
+              charWidth = cw;
+              rowHeight = rh;
             }}
-            on:title={({ detail }) => {
-              tabTitles[id] = detail;
-              tabTitles = tabTitles;
-            }}
-            on:data={({ detail: data }) =>
-              hasWriteAccess && dispatch("data", { id, data })}
-            on:close={() => dispatch("closeTab", { id })}
-            on:shrink={handleShrink}
-            on:expand={handleExpand}
-            on:bringToFront={() => dispatch("bringToFront")}
-            on:focus={() => dispatch("focus", { id })}
-            on:blur={() => dispatch("blur", { id })}
+            ontitle={(t) => { tabTitles[id] = t; tabTitles = { ...tabTitles }; }}
+            ondata={(data) => hasWriteAccess && ondata?.({ id, data })}
+            onclose={() => oncloseTab?.({ id })}
+            onshrink={handleShrink}
+            onexpand={handleExpand}
+            onbringToFront={() => onbringToFront?.()}
+            onfocus={() => onfocus?.({ id })}
+            onblur={() => onblur?.({ id })}
           />
         </div>
       {/each}
 
-      <!-- Splitter handles for the active group -->
+      <!-- Splitter handles -->
       {#each splitters as s (s.key)}
         <div
           class="splitter"
@@ -774,23 +654,24 @@
           style:top="{s.rect.y}px"
           style:width="{s.rect.w}px"
           style:height="{s.rect.h}px"
-          on:pointerdown={(e) => onSplitterDown(e, s)}
-          on:pointermove={onSplitterMove}
-          on:pointerup={onSplitterUp}
-          on:pointercancel={onSplitterUp}
+          role="separator"
+          tabindex="-1"
+          onpointerdown={(e) => onSplitterDown(e, s)}
+          onpointermove={onSplitterMove}
+          onpointerup={onSplitterUp}
+          onpointercancel={onSplitterUp}
         ></div>
       {/each}
 
-      <!-- Empty state when no shells -->
       {#if shells.length === 0}
         <div class="empty-state">
           <p>No terminals open.</p>
           <button
             disabled={!connected || !hasWriteAccess}
-            on:mousedown={(e) => {
+            onmousedown={(e) => {
               if (e.button === 0 && connected && hasWriteAccess) {
                 e.preventDefault();
-                dispatch("newTab");
+                onnewTab?.();
               }
             }}
           >New Terminal</button>
@@ -891,6 +772,7 @@
     flex-shrink: 0;
     opacity: 0.6;
     transition: opacity 150ms;
+    cursor: pointer;
   }
 
   .tab-close:hover {
@@ -942,14 +824,8 @@
     line-height: 1;
   }
 
-  .new-tab-btn:hover:not(:disabled) {
-    color: rgb(228, 228, 231);
-  }
-
-  .new-tab-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  .new-tab-btn:hover:not(:disabled) { color: rgb(228, 228, 231); }
+  .new-tab-btn:disabled { opacity: 0.5; cursor: default; }
 
   .term-area {
     flex: 1;
@@ -964,9 +840,7 @@
     display: none;
   }
 
-  .pane-wrapper.visible {
-    display: block;
-  }
+  .pane-wrapper.visible { display: block; }
 
   .pane-wrapper.active-pane {
     outline: 1px solid rgb(99, 102, 241);
@@ -979,17 +853,9 @@
     z-index: 10;
   }
 
-  .splitter.vertical {
-    cursor: col-resize;
-  }
-
-  .splitter.horizontal {
-    cursor: row-resize;
-  }
-
-  .splitter:hover {
-    background: rgba(99, 102, 241, 0.5);
-  }
+  .splitter.vertical { cursor: col-resize; }
+  .splitter.horizontal { cursor: row-resize; }
+  .splitter:hover { background: rgba(99, 102, 241, 0.5); }
 
   .empty-state {
     padding: 2rem;

@@ -3,22 +3,30 @@
 
   import { settings, updateSettings } from "$lib/settings";
   import OverlayMenu from "./OverlayMenu.svelte";
-  import themes, { type ThemeName } from "./themes";
+  import themes, { type ThemeName, defaultTheme } from "./themes";
 
-  export let open: boolean;
+  let { open, onclose }: { open: boolean; onclose?: () => void } = $props();
 
-  let inputName: string;
-  let inputTheme: ThemeName;
-  let inputScrollback: number;
+  let inputName = $state("");
+  let inputTheme = $state<ThemeName>(defaultTheme);
+  let inputScrollback = $state(0);
+  let initialized = $state(false);
 
-  let initialized = false;
-  $: open, (initialized = false);
-  $: if (!initialized) {
-    initialized = true;
-    inputName = $settings.name;
-    inputTheme = $settings.theme;
-    inputScrollback = $settings.scrollback;
-  }
+  $effect(() => {
+    // Re-sync fields each time the panel opens.
+    // Reading `open` makes the effect re-run when it changes.
+    open;
+    initialized = false;
+  });
+
+  $effect(() => {
+    if (!initialized) {
+      initialized = true;
+      inputName = $settings.name;
+      inputTheme = $settings.theme;
+      inputScrollback = $settings.scrollback;
+    }
+  });
 </script>
 
 <OverlayMenu
@@ -26,7 +34,7 @@
   description="Customize your collaborative terminal."
   showCloseButton
   {open}
-  on:close
+  {onclose}
 >
   <div class="flex flex-col gap-4">
     <div class="item">
@@ -40,7 +48,7 @@
           placeholder="Your name"
           bind:value={inputName}
           maxlength="50"
-          on:input={() => {
+          oninput={() => {
             if (inputName.length >= 2) {
               updateSettings({ name: inputName });
             }
@@ -60,7 +68,7 @@
         <select
           class="input-common !pr-5"
           bind:value={inputTheme}
-          on:change={() => updateSettings({ theme: inputTheme })}
+          onchange={() => updateSettings({ theme: inputTheme })}
         >
           {#each Object.keys(themes) as themeName (themeName)}
             <option value={themeName}>{themeName}</option>
@@ -80,7 +88,7 @@
           type="number"
           class="input-common"
           bind:value={inputScrollback}
-          on:input={() => {
+          oninput={() => {
             if (inputScrollback >= 0) {
               updateSettings({ scrollback: inputScrollback });
             }
@@ -89,13 +97,6 @@
         />
       </div>
     </div>
-    <!-- <div class="item">
-      <div>
-        <p class="item-title">Cursor style</p>
-        <p class="item-subtitle">Style of live cursors.</p>
-      </div>
-      <div class="text-red-500">Coming soon</div>
-    </div> -->
   </div>
 
   <!-- svelte-ignore missing-declaration -->

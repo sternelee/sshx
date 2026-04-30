@@ -1,5 +1,5 @@
 <!-- @component Interactive terminal rendered with wterm -->
-<script lang="ts" context="module">
+<script lang="ts" module>
   import { makeToast } from "$lib/toast";
 
   // Deduplicated terminal font loading.
@@ -34,8 +34,7 @@
 
 <script lang="ts">
   import { browser } from "$app/environment";
-
-  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { WTerm } from "@wterm/dom";
 
   import themes, { applyTheme } from "./themes";
@@ -46,117 +45,121 @@
   /** Used to determine Cmd versus Ctrl keyboard shortcuts. */
   const isMac = browser && navigator.platform.startsWith("Mac");
 
-  const dispatch = createEventDispatcher<{
-    data: Uint8Array;
-    close: void;
-    shrink: void;
-    expand: void;
-    bringToFront: void;
-    startMove: PointerEvent;
-    focus: void;
-    blur: void;
-    cellsize: { charWidth: number; rowHeight: number };
-    title: string;
-  }>();
+  let {
+    rows,
+    cols,
+    write = $bindable(),
+    termEl = $bindable<HTMLDivElement>(null as any),
+    showTitleBar = true,
+    visible = true,
+    charWidth = $bindable(0),
+    rowHeight = $bindable(0),
+    ondata,
+    onclose,
+    onshrink,
+    onexpand,
+    onbringToFront,
+    onstartMove,
+    onfocus,
+    onblur,
+    oncellsize,
+    ontitle,
+  }: {
+    rows: number;
+    cols: number;
+    /** Bound write function — parent calls this to push data into the terminal. */
+    write?: (data: string) => void;
+    termEl?: HTMLDivElement;
+    /** When false, hides the title bar (used by TabbedTerminal). */
+    showTitleBar?: boolean;
+    /** When false, hides this terminal (display:none). */
+    visible?: boolean;
+    charWidth?: number;
+    rowHeight?: number;
+    ondata?: (data: Uint8Array) => void;
+    onclose?: () => void;
+    onshrink?: () => void;
+    onexpand?: () => void;
+    onbringToFront?: () => void;
+    onstartMove?: (e: PointerEvent) => void;
+    onfocus?: () => void;
+    onblur?: () => void;
+    oncellsize?: (size: { charWidth: number; rowHeight: number }) => void;
+    ontitle?: (title: string) => void;
+  } = $props();
 
-  export let rows: number, cols: number;
-  export let write: (data: string) => void; // bound function prop
-
-  export let termEl: HTMLDivElement = null as any; // suppress "missing prop" warning
-  /** When false, hides the title bar (used by TabbedTerminal). */
-  export let showTitleBar: boolean = true;
-  /** When false, hides this terminal (display:none) — used in tab mode. */
-  export let visible: boolean = true;
   let term: WTerm | null = null;
-  export let charWidth = 0;
-  export let rowHeight = 0;
+  const theme = $derived(themes[$settings.theme]);
 
-  $: theme = themes[$settings.theme];
+  $effect(() => {
+    if (term && termEl) applyTheme(termEl, theme);
+  });
 
-  $: if (term && termEl) {
-    applyTheme(termEl, theme);
-  }
-
-  let loaded = false;
-  let focused = false;
-  let currentTitle = "Remote Terminal";
+  let loaded = $state(false);
+  let focused = $state(false);
+  let currentTitle = $state("Remote Terminal");
   let _focusCleanup: (() => void) | null = null;
   const utf8 = new TextEncoder();
 
-  // Keyboard shortcuts for natural text editing.
   function handleKeydown(event: KeyboardEvent) {
     if (!focused) return;
     const target = event.target as HTMLElement;
     if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
-      // wterm's own textarea keydown listener already handles all keys
-      // (including Escape → "\x1b") via its FIXED_KEYS table and calls
-      // e.preventDefault() itself.  We call it again here as belt-and-
-      // suspenders: some browsers still blur a focused textarea on Escape
-      // even when the original listener prevented default.  We must NOT
-      // call term?.focus() in a setTimeout here — doing so on an already-
-      // focused element triggers a blur+focus cycle in some browsers, which
-      // briefly sets `focused = false` and causes the keystroke immediately
-      // after Escape (e.g. a vim normal-mode command) to be silently dropped.
-      if (event.key === "Escape") {
-        event.preventDefault();
-      }
+      if (event.key === "Escape") event.preventDefault();
       return;
     }
-
     if (
       (isMac && event.metaKey && !event.ctrlKey && !event.altKey) ||
       (!isMac && !event.metaKey && event.ctrlKey && !event.altKey)
     ) {
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        dispatch("data", new Uint8Array([0x01]));
+        ondata?.(new Uint8Array([0x01]));
         return;
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        dispatch("data", new Uint8Array([0x05]));
+        ondata?.(new Uint8Array([0x05]));
         return;
       } else if (event.key === "Backspace") {
         event.preventDefault();
-        dispatch("data", new Uint8Array([0x15]));
+        ondata?.(new Uint8Array([0x15]));
         return;
       }
     }
   }
 
   function handleWheel(event: WheelEvent) {
-    if (focused) {
-      event.stopPropagation();
-    }
+    if (focused) event.stopPropagation();
   }
 
-  let isDragging = false;
+  let isDragging = $state(false);
 
   function handleTitlePointerDown(event: PointerEvent) {
     if (event.button !== 0) return;
     isDragging = true;
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    dispatch("startMove", event);
+    onstartMove?.(event);
   }
 
   function handleTitlePointerMove(event: PointerEvent) {
     if (!isDragging) return;
-    dispatch("startMove", event);
+    onstartMove?.(event);
   }
 
   function handleTitlePointerUp(event: PointerEvent) {
     if (!isDragging) return;
     isDragging = false;
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-    dispatch("startMove", event);
+    onstartMove?.(event);
   }
 
   const preloadBuffer: string[] = [];
 
+  // Expose write as a bindable function prop.
   write = (data: string) => {
     if (!term) {
       preloadBuffer.push(data);
     } else {
-      console.log("[XTerm] Writing to terminal:", data);
       term.write(data);
     }
   };
@@ -166,8 +169,6 @@
     const grid = termEl.querySelector(".term-grid") as HTMLElement | null;
     if (!grid) return;
 
-    // Create a single-character block identical to how wterm renders cells,
-    // using the same class so CSS (font, line-height, row-height) is inherited.
     const row = document.createElement("div");
     row.className = "term-row";
     row.style.visibility = "hidden";
@@ -186,21 +187,17 @@
     const measuredCharWidth = blockRect.width;
     row.remove();
 
-    // Sanity-check: reject implausible measurements that can occur when the
-    // grid is mid-render or CSS is not yet fully applied.
     if (measuredRowHeight >= 4 && measuredRowHeight <= 200) {
       rowHeight = measuredRowHeight;
     } else if (!rowHeight) {
-      rowHeight = 17; // safe fallback
+      rowHeight = 17;
     }
     if (measuredCharWidth >= 1 && measuredCharWidth <= 100) {
       charWidth = measuredCharWidth;
     } else if (!charWidth) {
-      charWidth = 9; // safe fallback
+      charWidth = 9;
     }
 
-    // Keep wterm's internal CSS variable in sync so that its renderer does
-    // not create rows with an exploding height.
     termEl.style.setProperty("--term-row-height", `${rowHeight}px`);
   }
 
@@ -209,45 +206,37 @@
     if (!Number.isFinite(c) || !Number.isFinite(r)) return;
     if (c < 1 || r < 1) return;
     const padding = 12 * 2; // wterm .wterm padding: 12px
-    let w = c * charWidth + padding;
-    let h = r * rowHeight + padding;
-    // Hard pixel limits as a last line of defence against exploding sizes.
-    w = Math.min(w, 3000);
-    h = Math.min(h, 4000);
+    let w = Math.min(c * charWidth + padding, 3000);
+    let h = Math.min(r * rowHeight + padding, 4000);
     termEl.style.boxSizing = "border-box";
     termEl.style.width = `${w}px`;
     termEl.style.height = `${h}px`;
   }
 
-  $: if (
-    term &&
-    charWidth > 0 &&
-    Number.isFinite(cols) &&
-    Number.isFinite(rows)
-  ) {
-    term.resize(cols, rows);
-    updateSize(cols, rows);
-  }
+  $effect(() => {
+    if (term && charWidth > 0 && Number.isFinite(cols) && Number.isFinite(rows)) {
+      term.resize(cols, rows);
+      updateSize(cols, rows);
+    }
+  });
 
   onMount(async () => {
     await waitForFonts();
 
-    // wterm requires element to be in DOM before init
     term = new WTerm(termEl, {
       cols,
       rows,
       cursorBlink: false,
       autoResize: false,
       onData: (data: string) => {
-        dispatch("data", utf8.encode(data));
+        ondata?.(utf8.encode(data));
       },
       onTitle: (title: string) => {
         currentTitle = title;
-        dispatch("title", title);
+        ontitle?.(title);
       },
     });
 
-    // Apply CSS variables for theme without overwriting inline styles
     applyTheme(termEl, theme);
 
     try {
@@ -259,24 +248,19 @@
 
     measureCharSize();
     updateSize(cols, rows);
-    dispatch("cellsize", { charWidth, rowHeight });
+    oncellsize?.({ charWidth, rowHeight });
 
-    // Track real focus state using focusin/focusout, which bubble from the
-    // wterm hidden textarea inside termEl. This is more accurate than
-    // window.blur because it fires correctly when focus moves between terminals.
-    // wterm's own _onClickFocus handles click-to-focus; we just sync our state.
     const handleFocusIn = () => {
       if (!focused) {
         focused = true;
-        dispatch("focus");
+        onfocus?.();
       }
     };
     const handleFocusOut = (event: FocusEvent) => {
-      // Only blur if focus truly left this terminal (not just moved within it).
       if (!termEl.contains(event.relatedTarget as Node)) {
         if (focused) {
           focused = false;
-          dispatch("blur");
+          onblur?.();
         }
       }
     };
@@ -289,7 +273,6 @@
 
     loaded = true;
     for (const data of preloadBuffer) {
-      console.log("[XTerm] Flushing preload buffer:", data);
       term.write(data);
     }
   });
@@ -308,55 +291,54 @@
   class:dragging={isDragging}
   style:background={theme.background}
   style:display={visible ? undefined : "none"}
-  on:mousedown={() => {
-    if (!isDragging) dispatch("bringToFront");
+  onmousedown={() => {
+    if (!isDragging) onbringToFront?.();
   }}
-  on:pointerdown={(event) => event.stopPropagation()}
+  onpointerdown={(event) => event.stopPropagation()}
+  role="presentation"
 >
   {#if showTitleBar}
-  <div
-    class="flex select-none"
-    on:pointerdown={handleTitlePointerDown}
-    on:pointermove={handleTitlePointerMove}
-    on:pointerup={handleTitlePointerUp}
-    on:pointercancel={handleTitlePointerUp}
-  >
-    <div class="flex-1 flex items-center px-3">
-      <CircleButtons>
-        <!--
-          TODO: This should be on:click, but that is not working due to the
-          containing element's on:pointerdown `stopPropagation()` call.
-        -->
-        <CircleButton
-          kind="red"
-          on:mousedown={(event) => event.button === 0 && dispatch("close")}
-        />
-        <CircleButton
-          kind="yellow"
-          on:mousedown={(event) => event.button === 0 && dispatch("shrink")}
-        />
-        <CircleButton
-          kind="green"
-          on:mousedown={(event) => event.button === 0 && dispatch("expand")}
-        />
-      </CircleButtons>
-    </div>
     <div
-      class="p-2 text-sm text-zinc-300 text-center font-medium overflow-hidden whitespace-nowrap text-ellipsis w-0 flex-grow-[4]"
+      class="flex select-none"
+      onpointerdown={handleTitlePointerDown}
+      onpointermove={handleTitlePointerMove}
+      onpointerup={handleTitlePointerUp}
+      onpointercancel={handleTitlePointerUp}
+      role="presentation"
     >
-      {currentTitle}
+      <div class="flex-1 flex items-center px-3">
+        <CircleButtons>
+          <CircleButton
+            kind="red"
+            onmousedown={(event) => event.button === 0 && onclose?.()}
+          />
+          <CircleButton
+            kind="yellow"
+            onmousedown={(event) => event.button === 0 && onshrink?.()}
+          />
+          <CircleButton
+            kind="green"
+            onmousedown={(event) => event.button === 0 && onexpand?.()}
+          />
+        </CircleButtons>
+      </div>
+      <div
+        class="p-2 text-sm text-zinc-300 text-center font-medium overflow-hidden whitespace-nowrap text-ellipsis w-0 flex-grow-[4]"
+      >
+        {currentTitle}
+      </div>
+      <div class="flex-1"></div>
     </div>
-    <div class="flex-1" />
-  </div>
   {/if}
   <div
     class="block transition-opacity duration-500"
     bind:this={termEl}
     style:opacity={loaded ? 1.0 : 0.0}
-    on:wheel={handleWheel}
-    on:click={() => term?.focus()}
-    on:mousedown={() => term?.focus()}
-  />
+    onwheel={handleWheel}
+    onclick={() => term?.focus()}
+    onmousedown={() => term?.focus()}
+    role="presentation"
+  ></div>
 </div>
 
 <style>

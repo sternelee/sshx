@@ -21,11 +21,11 @@
   <div class="fixed inset-0 z-40 pointer-events-none flex justify-end p-4">
     <div class="w-full max-w-md">
       {#each $toastStore.slice().reverse() as toast (toast)}
-        <div
-          class="mb-2"
-          on:click={() =>
+        <button
+          type="button"
+          class="mb-2 block w-full text-left pointer-events-auto"
+          onclick={() =>
             ($toastStore = $toastStore.filter((t) => t !== toast))}
-          on:keypress={() => null}
           animate:flip={{ duration: 500 }}
           transition:fly={{ x: 360, duration: 500 }}
         >
@@ -33,9 +33,9 @@
             kind={toast.kind}
             message={toast.message}
             action={toast.action}
-            on:action={toast.onAction ?? (() => null)}
+            onaction={toast.onAction ?? (() => null)}
           />
-        </div>
+        </button>
       {/each}
     </div>
   </div>
