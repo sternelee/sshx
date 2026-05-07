@@ -66,7 +66,7 @@ Do NOT just run `cargo build` — the env var gates regeneration.
 - `npm run lint` runs: `prettier --check . && ESLINT_USE_FLAT_CONFIG=false eslint .`
 - Svelte files are excluded from ESLint (`ignorePatterns` in `.eslintrc.cjs`).
 - Strict TypeScript mode. No JS unit test runner — frontend validation is lint + check + build.
-- Svelte 5 is used (`^5.55.4`) but component code uses legacy `$:` reactive syntax, not runes.
+- Svelte 5 is used (`^5.55.4`) with runes syntax (`$state`, `$derived`, `$effect`, `$props`). All components use callback props instead of `createEventDispatcher`. Snippets (`{@render children?.()}`) replace `<slot>`.
 
 ## Architecture
 

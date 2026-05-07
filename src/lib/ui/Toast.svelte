@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
   import {
     CheckCircleIcon,
     HelpCircleIcon,
@@ -7,16 +6,21 @@
     XCircleIcon,
   } from "svelte-feather-icons";
 
-  const dispatch = createEventDispatcher<{ action: void }>();
-
-  /** The kind of toast to display. */
-  export let kind: "info" | "success" | "error" = "info";
-
-  /** The message to display inside the toast. */
-  export let message: string;
-
-  /** An optional action to provide as a button on the toast. */
-  export let action = "";
+  let {
+    kind = "info",
+    message,
+    action = "",
+    onaction,
+  }: {
+    /** The kind of toast to display. */
+    kind?: "info" | "success" | "error";
+    /** The message to display inside the toast. */
+    message: string;
+    /** An optional action to provide as a button on the toast. */
+    action?: string;
+    /** Invoked when the user clicks the action button. */
+    onaction?: () => void;
+  } = $props();
 </script>
 
 <div class="toast-box">
@@ -38,7 +42,7 @@
     <div class="ml-auto">
       <button
         class="h-5 ml-3 px-2 flex items-center text-xs border rounded-md border-zinc-400 hover:border-zinc-200 hover:text-white transition-colors"
-        on:click={() => dispatch("action")}
+        onclick={() => onaction?.()}
       >
         {action}
       </button>

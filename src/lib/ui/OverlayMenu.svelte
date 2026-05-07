@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Dialog from "$lib/ui-headless/Dialog.svelte";
   import DialogDescription from "$lib/ui-headless/DialogDescription.svelte";
   import DialogOverlay from "$lib/ui-headless/DialogOverlay.svelte";
@@ -6,19 +7,28 @@
   import Transition from "$lib/ui-headless/Transition.svelte";
   import TransitionChild from "$lib/ui-headless/TransitionChild.svelte";
   import { XIcon } from "svelte-feather-icons";
-  import { createEventDispatcher } from "svelte";
 
-  const dispatch = createEventDispatcher<{ close: void }>();
-
-  export let title: string;
-  export let description: string;
-  export let showCloseButton = false;
-  export let maxWidth: number = 768; // screen-md
-  export let open: boolean;
+  let {
+    title,
+    description,
+    showCloseButton = false,
+    maxWidth = 768, // screen-md
+    open,
+    onclose,
+    children,
+  }: {
+    title: string;
+    description: string;
+    showCloseButton?: boolean;
+    maxWidth?: number;
+    open: boolean;
+    onclose?: () => void;
+    children?: Snippet;
+  } = $props();
 </script>
 
 <Transition show={open}>
-  <Dialog on:close class="fixed inset-0 z-50 grid place-items-center">
+  <Dialog {onclose} class="fixed inset-0 z-50 grid place-items-center">
     <DialogOverlay class="fixed -z-10 inset-0 bg-black/20 backdrop-blur-sm" />
 
     <TransitionChild
@@ -39,7 +49,7 @@
           <button
             class="absolute top-4 right-4 p-1 rounded hover:bg-zinc-700 active:bg-indigo-700 transition-colors"
             aria-label="Close {title}"
-            on:click={() => dispatch("close")}
+            onclick={() => onclose?.()}
           >
             <XIcon class="h-5 w-5" />
           </button>
@@ -54,7 +64,7 @@
           </DialogDescription>
         </div>
 
-        <slot />
+        {@render children?.()}
       </div>
     </TransitionChild>
   </Dialog>

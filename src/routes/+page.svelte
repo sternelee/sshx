@@ -94,7 +94,7 @@
   <div class="pb-12 md:pb-36">
     <button
       class="bg-pink-700 hover:bg-pink-600 active:ring-4 active:ring-pink-500/50 text-lg font-medium px-8 py-2 rounded-full"
-      on:click={scrollToInstallation}
+      onclick={scrollToInstallation}
     >
       Get Started
     </button>

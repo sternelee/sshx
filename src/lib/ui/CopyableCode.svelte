@@ -1,9 +1,9 @@
 <script lang="ts">
   import { CheckIcon, CopyIcon } from "svelte-feather-icons";
 
-  export let value: string;
+  let { value }: { value: string } = $props();
 
-  let copied = false;
+  let copied = $state(false);
 
   async function handleClick() {
     await navigator.clipboard.writeText(value);
@@ -19,7 +19,7 @@
   <button
     class={"rounded p-1.5 transition-colors " +
       (!copied ? "hover:bg-white/10" : "hover:bg-green-500/10")}
-    on:click={handleClick}
+    onclick={handleClick}
   >
     {#if copied}
       <CheckIcon size="16" class="text-green-400" />

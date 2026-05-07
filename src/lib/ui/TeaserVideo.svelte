@@ -13,9 +13,9 @@
 <div class="rounded-lg border border-white/10 overflow-hidden">
   <div class="flex bg-zinc-900 items-end">
     <div class="px-4 py-3 flex gap-1.5">
-      <div class="w-2.5 h-2.5 rounded-full bg-red-500" />
-      <div class="w-2.5 h-2.5 rounded-full bg-yellow-500" />
-      <div class="w-2.5 h-2.5 rounded-full bg-green-500" />
+      <div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+      <div class="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
+      <div class="w-2.5 h-2.5 rounded-full bg-green-500"></div>
     </div>
     <div class="flex ml-2">
       <div class="rounded-t-lg bg-zinc-800 h-7 w-44 px-2 flex items-center">

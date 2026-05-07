@@ -4,7 +4,7 @@
   import type { WsUser } from "$lib/protocol";
   import { nameToHue } from "./LiveCursor.svelte";
 
-  export let users: [number, WsUser][];
+  let { users }: { users: [number, WsUser][] } = $props();
 
   function nameToInitials(name: string): string {
     const parts = name.split(/\s/).filter((s) => s);

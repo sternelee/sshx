@@ -1,10 +1,15 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
 
-  export let status: "connected" | "no-server" | "no-shell";
-
-  export let serverLatency: number | null;
-  export let shellLatency: number | null;
+  let {
+    status,
+    serverLatency,
+    shellLatency,
+  }: {
+    status: "connected" | "no-server" | "no-shell";
+    serverLatency: number | null;
+    shellLatency: number | null;
+  } = $props();
 
   function displayLatency(latency: number) {
     if (latency < 1) {
@@ -54,11 +59,11 @@
   </p>
 
   <div class="flex justify-between items-center mt-6">
-    <div class="ball filled" />
-    <div class="border-t-2 border-dashed border-zinc-600 w-32" />
-    <div class="ball" class:filled={status !== "no-server"} />
-    <div class="border-t-2 border-dashed border-zinc-600 w-32" />
-    <div class="ball" class:filled={status === "connected"} />
+    <div class="ball filled"></div>
+    <div class="border-t-2 border-dashed border-zinc-600 w-32"></div>
+    <div class="ball" class:filled={status !== "no-server"}></div>
+    <div class="border-t-2 border-dashed border-zinc-600 w-32"></div>
+    <div class="ball" class:filled={status === "connected"}></div>
   </div>
 
   <div class="flex justify-between items-center mt-2.5">

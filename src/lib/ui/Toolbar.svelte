@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
   import {
     MessageSquareIcon,
     PlusCircleIcon,
@@ -9,18 +8,27 @@
 
   import logo from "$lib/assets/logo.svg";
 
-  export let connected: boolean;
-  export let hasWriteAccess: boolean | undefined;
-  export let newMessages: boolean;
-  export let layoutMode: "canvas" | "tabs" = "canvas";
-
-  const dispatch = createEventDispatcher<{
-    create: void;
-    chat: void;
-    settings: void;
-    networkInfo: void;
-    layoutChange: "canvas" | "tabs";
-  }>();
+  let {
+    connected,
+    hasWriteAccess,
+    newMessages,
+    layoutMode = "canvas",
+    oncreate,
+    onchat,
+    onsettings,
+    onnetworkInfo,
+    onlayoutChange,
+  }: {
+    connected: boolean;
+    hasWriteAccess: boolean | undefined;
+    newMessages: boolean;
+    layoutMode?: "canvas" | "tabs";
+    oncreate?: () => void;
+    onchat?: () => void;
+    onsettings?: () => void;
+    onnetworkInfo?: () => void;
+    onlayoutChange?: (mode: "canvas" | "tabs") => void;
+  } = $props();
 </script>
 
 <div class="panel inline-block px-3 py-2">
@@ -30,50 +38,49 @@
     >
     <p class="ml-1.5 mr-2 font-medium">sshx</p>
 
-    <div class="v-divider" />
+    <div class="v-divider"></div>
 
     <div class="flex space-x-1">
       <button
         class="icon-button"
-        on:click={() => dispatch("create")}
+        onclick={() => oncreate?.()}
         disabled={!connected || !hasWriteAccess}
         title={!connected
           ? "Not connected"
-          : hasWriteAccess === false // Only show the "No write access" title after confirming read-only mode.
-          ? "No write access"
-          : "Create new terminal"}
+          : hasWriteAccess === false
+            ? "No write access"
+            : "Create new terminal"}
       >
         <PlusCircleIcon strokeWidth={1.5} class="p-0.5" />
       </button>
-      <button class="icon-button" on:click={() => dispatch("chat")}>
+      <button class="icon-button" onclick={() => onchat?.()}>
         <MessageSquareIcon strokeWidth={1.5} class="p-0.5" />
         {#if newMessages}
-          <div class="activity" />
+          <div class="activity"></div>
         {/if}
       </button>
-      <button class="icon-button" on:click={() => dispatch("settings")}>
+      <button class="icon-button" onclick={() => onsettings?.()}>
         <SettingsIcon strokeWidth={1.5} class="p-0.5" />
       </button>
     </div>
 
-    <div class="v-divider" />
+    <div class="v-divider"></div>
 
     <div class="flex space-x-1">
-      <button class="icon-button" on:click={() => dispatch("networkInfo")}>
+      <button class="icon-button" onclick={() => onnetworkInfo?.()}>
         <WifiIcon strokeWidth={1.5} class="p-0.5" />
       </button>
     </div>
 
-    <div class="v-divider" />
+    <div class="v-divider"></div>
 
     <div class="flex space-x-1" title="Layout mode">
       <button
         class="icon-button"
         class:active={layoutMode === "canvas"}
         title="Canvas mode — free floating terminals"
-        on:click={() => dispatch("layoutChange", "canvas")}
+        onclick={() => onlayoutChange?.("canvas")}
       >
-        <!-- 2×2 grid icon -->
         <svg
           width="20"
           height="20"
@@ -102,9 +109,8 @@
         class="icon-button"
         class:active={layoutMode === "tabs"}
         title="Tab mode — all terminals in one window"
-        on:click={() => dispatch("layoutChange", "tabs")}
+        onclick={() => onlayoutChange?.("tabs")}
       >
-        <!-- Tab window icon -->
         <svg
           width="20"
           height="20"
