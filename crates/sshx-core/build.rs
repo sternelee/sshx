@@ -20,7 +20,10 @@ fn main() {
             println!("cargo:warning=protoc not found, using pre-generated protobuf files");
             return;
         }
-        panic!("protoc is required to generate protobuf files. Set SSHX_REGENERATE_PROTO=1 or install protoc.");
+        panic!(
+            "protoc is required to generate protobuf files. Set SSHX_REGENERATE_PROTO=1 or \
+             install protoc."
+        );
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
