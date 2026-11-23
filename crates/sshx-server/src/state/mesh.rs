@@ -105,20 +105,43 @@ impl StorageMesh {
     }
 
     /// Retrieve the owner and snapshot of a session.
+    ///
+    /// When `use_cache` is true (used by `frontend_connect`), a cached remote
+    /// owner short-circuits without hitting Redis so viewer-join storms redirect
+    /// in O(1). Callers that need the snapshot itself (e.g. `backend_connect`
+    /// taking over a session) pass `use_cache = false`.
     pub async fn get_owner_snapshot(
         &self,
         name: &str,
+        use_cache: bool,
     ) -> Result<(Option<String>, Option<Vec<u8>>)> {
+        let now = Instant::now();
+        if use_cache {
+            if let Some(entry) = self.ownership_cache.get(name) {
+                let (owner, cached_at) = entry.value();
+                if now.duration_since(*cached_at) < OWNERSHIP_CACHE_TTL {
+                    if let Some(owner) = owner {
+                        if Some(owner.as_str()) != self.host.as_deref() {
+                            return Ok((Some(owner.clone()), None));
+                        }
+                    }
+                }
+            }
+        }
+
         let mut conn = self.redis.get().await?;
-        let (owner, snapshot, closed) = redis::pipe()
+        let (owner, snapshot, closed): (Option<String>, Option<Vec<u8>>, bool) = redis::pipe()
             .get(format!("session:{{{name}}}:owner"))
             .get(format!("session:{{{name}}}:snapshot"))
             .get(format!("session:{{{name}}}:closed"))
             .query_async(&mut conn)
             .await?;
         if closed {
+            self.ownership_cache.insert(name.to_string(), (None, now));
             Ok((None, None))
         } else {
+            self.ownership_cache
+                .insert(name.to_string(), (owner.clone(), now));
             Ok((owner, snapshot))
         }
     }

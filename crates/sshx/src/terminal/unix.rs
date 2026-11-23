@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::env;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -123,10 +124,12 @@ impl PreparedExec {
                 continue;
             }
             let candidate = Path::new(dir).join(shell);
-            if candidate.is_file() {
-                return Ok(CString::new(candidate.to_str().ok_or_else(|| {
-                    anyhow::anyhow!("shell path is not valid UTF-8")
-                })?)?);
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
+                    return Ok(CString::new(candidate.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("shell path is not valid UTF-8")
+                    })?)?);
+                }
             }
         }
         bail!("shell executable not found in PATH: {shell}")

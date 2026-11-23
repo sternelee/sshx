@@ -172,7 +172,7 @@ impl ServerState {
         }
 
         if let Some(mesh) = &self.mesh {
-            let (owner, snapshot) = mesh.get_owner_snapshot(name).await?;
+            let (owner, snapshot) = mesh.get_owner_snapshot(name, false).await?;
             if let Some(snapshot) = snapshot {
                 let session = Arc::new(Session::restore(&snapshot)?);
                 self.insert(name, session.clone());
@@ -201,7 +201,7 @@ impl ServerState {
         }
 
         if let Some(mesh) = &self.mesh {
-            let (owner, snapshot) = mesh.get_owner_snapshot(name).await?;
+            let (owner, snapshot) = mesh.get_owner_snapshot(name, true).await?;
 
             // Owner is us-or-unset means this node should serve. If we
             // have a snapshot it must have been cold-evicted earlier on
@@ -277,9 +277,19 @@ impl ServerState {
                 }
                 // Order matters: snapshot is durable in Redis BEFORE we
                 // remove from the hot map and shut down background_sync.
-                self.store.remove(&name);
-                session.shutdown();
-                info!(name, "session evicted to cold tier");
+                // Re-check liveness atomically inside DashMap::remove_if so we
+                // never evict a session that a CLI or viewer just attached to
+                // while `evict_to_cold` was awaiting Redis.
+                let evicted = self.store.remove_if(&name, |_, s| {
+                    Arc::ptr_eq(s, &session)
+                        && !s.has_active_grpc()
+                        && s.user_count() == 0
+                        && s.last_accessed_elapsed() > *COLD_THRESHOLD
+                });
+                if let Some((_, evicted_session)) = evicted {
+                    evicted_session.shutdown();
+                    info!(name, "session evicted to cold tier");
+                }
             }
         }
     }

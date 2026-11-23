@@ -56,8 +56,6 @@ where
         .into_axum_router()
         .layer(grpc_trace)
         .into_service()
-        // This type conversion is necessary because Tonic 0.12 uses Axum 0.7, so its `axum::Router`
-        // and `axum::Body` are based on an older `axum_core` version.
         .map_response(|r| r.map(Body::new))
         .boxed_clone();
 

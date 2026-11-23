@@ -275,7 +275,8 @@ impl Session {
     /// Add a new shell to the session.
     pub fn add_shell(&self, id: Sid, center: (i32, i32)) -> Result<()> {
         use std::collections::hash_map::Entry::*;
-        match self.shells.write().entry(id) {
+        let mut shells = self.shells.write();
+        match shells.entry(id) {
             Occupied(_) => bail!("shell already exists with id={id}"),
             Vacant(v) => {
                 v.insert(Arc::new(Mutex::new(State::default())));
@@ -289,18 +290,17 @@ impl Session {
             };
             source.push((id, winsize));
         });
+        drop(shells);
         self.sync_now();
         Ok(())
     }
 
     /// Terminates an existing shell.
     pub fn close_shell(&self, id: Sid) -> Result<()> {
-        let shell_arc = {
-            let shells = self.shells.read();
-            match shells.get(&id) {
-                Some(s) => Arc::clone(s),
-                None => bail!("cannot close shell with id={id}, does not exist"),
-            }
+        let shells = self.shells.read();
+        let shell_arc = match shells.get(&id) {
+            Some(s) => Arc::clone(s),
+            None => bail!("cannot close shell with id={id}, does not exist"),
         };
         {
             let mut shell = shell_arc.lock();
@@ -309,10 +309,11 @@ impl Session {
             }
             shell.closed = true;
             shell.notify.notify_waiters();
+            self.source.send_modify(|source| {
+                source.retain(|&(x, _)| x != id);
+            });
         }
-        self.source.send_modify(|source| {
-            source.retain(|&(x, _)| x != id);
-        });
+        drop(shells);
         self.sync_now();
         Ok(())
     }
