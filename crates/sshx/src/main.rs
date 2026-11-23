@@ -31,6 +31,15 @@ struct Args {
     /// editors.
     #[clap(long)]
     enable_readers: bool,
+
+    /// Run the terminal under herdr-core instead of a local PTY, so the program
+    /// keeps running when this client exits and can be reattached to.
+    #[clap(long)]
+    herdr: bool,
+
+    /// Socket to reach herdr-core on, when it is not in the default location.
+    #[clap(long, requires = "herdr")]
+    herdr_socket: Option<std::path::PathBuf>,
 }
 
 fn print_greeting(shell: &str, controller: &Controller) {
@@ -73,8 +82,8 @@ fn print_greeting(shell: &str, controller: &Controller) {
 
 #[tokio::main]
 async fn start(args: Args) -> Result<()> {
-    let shell = match args.shell {
-        Some(shell) => shell,
+    let shell = match &args.shell {
+        Some(shell) => shell.clone(),
         None => get_default_shell().await,
     };
 
@@ -89,7 +98,23 @@ async fn start(args: Args) -> Result<()> {
         name
     });
 
-    let runner = Runner::Shell(shell.clone());
+    let runner = if args.herdr {
+        // With no explicit --shell, herdr-core starts the machine's own shell.
+        let argv = match &args.shell {
+            Some(shell) => vec![shell.clone()],
+            None => Vec::new(),
+        };
+        // A stable local identifier, so a restarted client reattaches to the
+        // terminals this machine left running instead of starting new ones.
+        let workspace = sshx::state::workspace_id()?;
+        Runner::Herdr {
+            argv,
+            socket: args.herdr_socket,
+            workspace,
+        }
+    } else {
+        Runner::Shell(shell.clone())
+    };
     let mut controller = Controller::new(&args.server, &name, runner, args.enable_readers).await?;
     if args.quiet {
         if let Some(write_url) = controller.write_url() {
