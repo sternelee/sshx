@@ -143,8 +143,10 @@ async fn handle_socket(socket: &mut WebSocket, session: Arc<Session>) -> Result<
         let msg = tokio::select! {
             _ = session.terminated() => break,
             Some(result) = broadcast_stream.next() => {
-                let msg = result.context("client fell behind on broadcast stream")?;
-                send(socket, msg).await?;
+                // Pre-encoded CBOR frame from session.broadcast_msg; forward
+                // verbatim without re-serializing.
+                let bytes = result.context("client fell behind on broadcast stream")?;
+                socket.send(Message::Binary(bytes)).await?;
                 continue;
             }
             Some(shells) = shells_stream.next() => {
