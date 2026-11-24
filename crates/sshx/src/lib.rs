@@ -8,5 +8,7 @@
 
 pub mod controller;
 pub mod encrypt;
+pub mod herdr;
 pub mod runner;
+pub mod state;
 pub mod terminal;
