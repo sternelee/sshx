@@ -4,14 +4,19 @@ module.exports = {
   extends: [
     "eslint:recommended",
     "plugin:@typescript-eslint/recommended",
+    "plugin:svelte/recommended",
     "prettier",
   ],
-  plugins: ["svelte3", "@typescript-eslint"],
-  ignorePatterns: ["*.cjs"],
-  overrides: [{ files: ["*.svelte"], processor: "svelte3/svelte3" }],
-  settings: {
-    "svelte3/typescript": () => require("typescript"),
-  },
+  ignorePatterns: ["*.cjs", "build/**", ".svelte-kit/**", "target/**"],
+  overrides: [
+    {
+      files: ["*.svelte"],
+      parser: "svelte-eslint-parser",
+      parserOptions: {
+        parser: "@typescript-eslint/parser",
+      },
+    },
+  ],
   rules: {
     "@typescript-eslint/ban-ts-comment": "off",
     "@typescript-eslint/ban-types": "off",
@@ -19,6 +24,9 @@ module.exports = {
     "@typescript-eslint/no-explicit-any": "off",
     "@typescript-eslint/no-inferrable-types": "off",
     "@typescript-eslint/no-non-null-assertion": "off",
+    "@typescript-eslint/no-unsafe-function-type": "off",
+    "svelte/valid-compile": "off",
+    "svelte/no-unused-svelte-ignore": "off",
     "no-constant-condition": "off",
     "no-control-regex": "off",
     "no-empty": "off",

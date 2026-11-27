@@ -1,0 +1,5 @@
+allowBuilds:
+  '@sveltejs/kit': false
+  cbor-extract: false
+  esbuild: false
+  svelte-preprocess: false

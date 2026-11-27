@@ -3,22 +3,22 @@
 
   import { settings, updateSettings } from "$lib/settings";
   import OverlayMenu from "./OverlayMenu.svelte";
-  import themes, { type ThemeName } from "./themes";
+  import themes from "./themes";
 
-  export let open: boolean;
+  let { open, onclose }: { open: boolean; onclose?: () => void } = $props();
 
-  let inputName: string;
-  let inputTheme: ThemeName;
-  let inputScrollback: number;
+  let inputName = $state($settings.name);
+  let inputTheme = $state($settings.theme);
+  let inputScrollback = $state($settings.scrollback);
 
-  let initialized = false;
-  $: open, (initialized = false);
-  $: if (!initialized) {
-    initialized = true;
-    inputName = $settings.name;
-    inputTheme = $settings.theme;
-    inputScrollback = $settings.scrollback;
-  }
+  // Re-sync the form whenever the settings dialog is opened.
+  $effect(() => {
+    if (open) {
+      inputName = $settings.name;
+      inputTheme = $settings.theme;
+      inputScrollback = $settings.scrollback;
+    }
+  });
 </script>
 
 <OverlayMenu
@@ -26,7 +26,7 @@
   description="Customize your collaborative terminal."
   showCloseButton
   {open}
-  on:close
+  {onclose}
 >
   <div class="flex flex-col gap-4">
     <div class="item">

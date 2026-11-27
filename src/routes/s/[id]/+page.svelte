@@ -17,7 +17,7 @@
 </svelte:head>
 
 <Session
-  id={$page.params.id}
+  id={$page.params.id ?? ""}
   on:receiveName={({ detail: sessionName }) => {
     if (sessionName) {
       title = `${sessionName} | sshx`;

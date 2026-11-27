@@ -1,8 +1,8 @@
 <script lang="ts">
+  import { browser } from "$app/environment";
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { fly } from "svelte/transition";
-  import { Portal } from "@rgossiaux/svelte-headlessui";
 
   import Toast from "./Toast.svelte";
   import { toastStore } from "$lib/toast";
@@ -17,15 +17,16 @@
   });
 </script>
 
-<Portal>
+{#if browser}
   <div class="fixed inset-0 z-40 pointer-events-none flex justify-end p-4">
     <div class="w-full max-w-md">
       {#each $toastStore.slice().reverse() as toast (toast)}
         <div
           class="mb-2"
-          on:click={() =>
-            ($toastStore = $toastStore.filter((t) => t !== toast))}
-          on:keypress={() => null}
+          role="button"
+          tabindex="0"
+          onclick={() => ($toastStore = $toastStore.filter((t) => t !== toast))}
+          onkeydown={() => null}
           animate:flip={{ duration: 500 }}
           transition:fly={{ x: 360, duration: 500 }}
         >
@@ -39,4 +40,4 @@
       {/each}
     </div>
   </div>
-</Portal>
+{/if}

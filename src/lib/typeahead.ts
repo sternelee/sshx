@@ -1417,7 +1417,10 @@ class TypeAheadStyle implements IDisposable {
   undo!: string;
   private _csiHandler?: IDisposable;
 
-  constructor(value: string, private readonly _terminal: Terminal) {
+  constructor(
+    value: string,
+    private readonly _terminal: Terminal,
+  ) {
     this.onUpdate(value);
   }
 
@@ -1468,7 +1471,7 @@ class TypeAheadStyle implements IDisposable {
 
   private _onDidWriteSGR(args: (number | number[])[]) {
     const originalUndo = this._undoArgs;
-    for (let i = 0; i < args.length; ) {
+    for (let i = 0; i < args.length;) {
       const px = args[i];
       const p = typeof px === "number" ? px : px[0];
 
@@ -1718,12 +1721,15 @@ export class TypeAheadAddon extends Disposable implements ITerminalAddon {
       return;
     }
 
-    this._clearPredictionDebounce = disposableTimeout(() => {
-      this._timeline?.undoAllPredictions();
-      if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
-        this._lastRow.charState = CharPredictState.Unknown;
-      }
-    }, Math.max(500, (this.stats.maxLatency * 3) / 2));
+    this._clearPredictionDebounce = disposableTimeout(
+      () => {
+        this._timeline?.undoAllPredictions();
+        if (this._lastRow?.charState === CharPredictState.HasPendingChar) {
+          this._lastRow.charState = CharPredictState.Unknown;
+        }
+      },
+      Math.max(500, (this.stats.maxLatency * 3) / 2),
+    );
   }
 
   /**

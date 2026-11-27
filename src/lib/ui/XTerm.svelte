@@ -14,7 +14,7 @@
         state = "loading";
         try {
           await new FontFaceObserver("Fira Code VF").load();
-        } catch (error) {
+        } catch {
           makeToast({
             kind: "error",
             message: "Could not load terminal font.",
@@ -269,7 +269,9 @@
 <style lang="postcss">
   .term-container {
     @apply inline-block rounded-lg border border-zinc-700 opacity-90;
-    transition: transform 200ms, opacity 200ms;
+    transition:
+      transform 200ms,
+      opacity 200ms;
   }
 
   .term-container:not(.focused) :global(.xterm) {

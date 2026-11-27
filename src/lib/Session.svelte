@@ -422,8 +422,8 @@
           status={connected
             ? "connected"
             : exitReason
-            ? "no-shell"
-            : "no-server"}
+              ? "no-shell"
+              : "no-server"}
           serverLatency={integerMedian(serverLatencies)}
           shellLatency={integerMedian(shellLatencies)}
         />
@@ -444,7 +444,7 @@
     </div>
   {/if}
 
-  <Settings open={settingsOpen} on:close={() => (settingsOpen = false)} />
+  <Settings open={settingsOpen} onclose={() => (settingsOpen = false)} />
 
   <ChooseName />
 

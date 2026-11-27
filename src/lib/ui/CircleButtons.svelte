@@ -1,3 +1,7 @@
+<script lang="ts">
+  let { children } = $props();
+</script>
+
 <div class="flex space-x-2 text-transparent hover:text-black/75">
-  <slot />
+  {@render children()}
 </div>

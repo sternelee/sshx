@@ -5,8 +5,10 @@
   import "../app.css";
 
   import ToastContainer from "$lib/ui/ToastContainer.svelte";
+
+  let { children } = $props();
 </script>
 
 <ToastContainer />
 
-<slot />
+{@render children()}
